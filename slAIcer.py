@@ -806,15 +806,18 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 				   splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 				   diver_zone_norm=None, start_search_at_idx=0, debug=False, splash_method='combined',
-				   video_fps=30, use_threading=True):
+				   video_fps=30, use_threading=True, enable_pose_optimization=False):
 	"""
 	Core dive detection algorithm using state machine approach.
-	Simple threading optimization: reuse pose detector instead of creating new ones each frame.
+	Conservative optimization: Reduce pose detection only when safe (during confirmed diving state).
 	"""
 
-	# Simple threading optimization - reuse pose detector
+	# Threading optimization - reuse pose detector + optional selective detection
 	if use_threading:
-		print("🚀 Using optimized pose detection (reused detector)...")
+		if enable_pose_optimization:
+			print("🚀 Using conservative optimized pose detection (selective + reused detector)...")
+		else:
+			print("🚀 Using basic optimized pose detection (reused detector only)...")
 		with suppress_stderr():
 			pose = mp_pose.Pose(static_image_mode=True)
 	else:
@@ -837,6 +840,12 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	frames_without_diver = 0
 
 	print(f"Using dynamic timing: min_dive={min_dive_frames} frames, max_timeout={max_no_splash_frames} frames at {video_fps:.1f}fps")
+
+	# Adaptive pose detection optimization
+	last_pose_detection_frame = -1
+	pose_cooldown_frames = int(0.2 * video_fps)  # Skip ~0.2s worth of frames
+	pose_detections_skipped = 0
+	total_pose_opportunities = 0
 
 	# Debug window management
 	skipping_to_action = debug
@@ -914,50 +923,72 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 				splash_detected_idx = idx
 		prev_gray = gray
 
-		# --- Diver detection in zone ---
+		# --- Conservative Adaptive Diver detection in zone ---
 		diver_in_zone = False
 		pose_landmarks_full_frame = None
 
-		if diver_zone_norm is not None:
-			left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
-			left = int(left_norm * w)
-			top = int(top_norm * h)
-			right = int(right_norm * w)
-			bottom = int(bottom_norm * h)
+		# Conservative adaptive pose detection - only skip when we're very confident
+		should_detect_pose = True  # Default to always detect
+		total_pose_opportunities += 1
 
-			roi = rgb[top:bottom, left:right]
-			if roi.size > 0:
+		# Only apply optimization if enabled and we're in a safe state to skip
+		if enable_pose_optimization and state == DIVING and frames_without_diver > diver_detection_threshold * 2:
+			# Diver has been gone for a while during diving - safe to skip occasionally
+			frames_since_last_detection = idx - last_pose_detection_frame
+			if frames_since_last_detection < pose_cooldown_frames:
+				should_detect_pose = False
+				diver_in_zone = False  # Safe assumption during diving cooldown
+
+		# Perform pose detection when needed
+		if should_detect_pose:
+			if diver_zone_norm is not None:
+				left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
+				left = int(left_norm * w)
+				top = int(top_norm * h)
+				right = int(right_norm * w)
+				bottom = int(bottom_norm * h)
+
+				roi = rgb[top:bottom, left:right]
+				if roi.size > 0:
+					if use_threading and pose is not None:
+						# Use reused pose detector
+						res = pose.process(roi)
+					else:
+						# Create temporary pose detector
+						with suppress_stderr():
+							temp_pose = mp_pose.Pose(static_image_mode=True)
+							res = temp_pose.process(roi)
+							temp_pose.close()
+
+					if res.pose_landmarks:
+						diver_in_zone = True
+						pose_landmarks_full_frame = []
+						for landmark in res.pose_landmarks.landmark:
+							full_x = (landmark.x * (right - left) + left) / w
+							full_y = (landmark.y * (bottom - top) + top) / h
+							pose_landmarks_full_frame.append((full_x, full_y, landmark.z))
+
+					last_pose_detection_frame = idx  # Mark that we performed detection
+			else:
+				# Fallback: detect pose in entire frame (old behavior)
 				if use_threading and pose is not None:
 					# Use reused pose detector
-					res = pose.process(roi)
+					res = pose.process(rgb)
 				else:
 					# Create temporary pose detector
 					with suppress_stderr():
 						temp_pose = mp_pose.Pose(static_image_mode=True)
-						res = temp_pose.process(roi)
+						res = temp_pose.process(rgb)
 						temp_pose.close()
 
+				diver_in_zone = res.pose_landmarks is not None
 				if res.pose_landmarks:
-					diver_in_zone = True
-					pose_landmarks_full_frame = []
-					for landmark in res.pose_landmarks.landmark:
-						full_x = (landmark.x * (right - left) + left) / w
-						full_y = (landmark.y * (bottom - top) + top) / h
-						pose_landmarks_full_frame.append((full_x, full_y, landmark.z))
-		else:
-			if use_threading and pose is not None:
-				# Use reused pose detector
-				res = pose.process(rgb)
-			else:
-				# Create temporary pose detector
-				with suppress_stderr():
-					temp_pose = mp_pose.Pose(static_image_mode=True)
-					res = temp_pose.process(rgb)
-					temp_pose.close()
+					pose_landmarks_full_frame = [(lm.x, lm.y, lm.z) for lm in res.pose_landmarks.landmark]
 
-			diver_in_zone = res.pose_landmarks is not None
-			if res.pose_landmarks:
-				pose_landmarks_full_frame = [(lm.x, lm.y, lm.z) for lm in res.pose_landmarks.landmark]
+				last_pose_detection_frame = idx  # Mark that we performed detection
+		else:
+			# Pose detection was skipped due to optimization
+			pose_detections_skipped += 1
 
 		# Update diver presence counters
 		if diver_in_zone:
@@ -1000,20 +1031,307 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 					confidence = 'low'
 					break
 
-	# Cleanup
+	# Cleanup and performance reporting
 	if use_threading and pose is not None:
 		pose.close()
+
+		# Report optimization performance
+		if enable_pose_optimization and total_pose_opportunities > 0:
+			skip_percentage = (pose_detections_skipped / total_pose_opportunities) * 100
+			print(f"⚡ Conservative pose optimization: skipped {pose_detections_skipped}/{total_pose_opportunities} operations ({skip_percentage:.1f}% reduction)")
+		elif not enable_pose_optimization:
+			print("⚡ Pose optimization disabled - using full detection")
+		else:
+			print("⚡ Conservative optimization: full pose detection used (no safe skip opportunities)")
 	if debug:
 		cv2.destroyAllWindows()
 
 	return start_idx, end_idx, confidence
 
+def print_detailed_metrics(metrics, output_dir):
+	"""Print comprehensive metrics about the dive analysis performance."""
+	print("\n" + "="*80)
+	print("📊 DIVE ANALYSIS METRICS")
+	print("="*80)
+
+	# Video Information
+	video_info = metrics.get('video_info', {})
+	print(f"🎥 Video Information:")
+	print(f"    📁 File: {video_info.get('filename', 'N/A')}")
+	print(f"    📏 Resolution: {video_info.get('width', 'N/A')}x{video_info.get('height', 'N/A')}")
+	print(f"    🎬 FPS: {video_info.get('fps', 'N/A'):.1f}")
+	print(f"    ⏱️  Duration: {video_info.get('duration_seconds', 'N/A'):.1f}s ({video_info.get('total_frames', 'N/A')} frames)")
+	print(f"    💾 File Size: {video_info.get('file_size_mb', 'N/A'):.1f} MB")
+
+	# Processing Performance
+	print(f"\n⚡ Processing Performance:")
+	print(f"    🔍 Detection Time: {metrics.get('detection_time', 0):.2f}s")
+	print(f"    💾 Extraction Time: {metrics.get('extraction_time', 0):.2f}s")
+	print(f"    ⏱️  Total Processing: {metrics.get('total_processing_time', 0):.2f}s")
+	print(f"    🖼️  Frames Processed: {metrics.get('total_frames_processed', 'N/A')}")
+
+	performance = metrics.get('performance', {})
+	if performance:
+		print(f"    🚀 Detection Speed: {performance.get('detection_fps', 0):.1f} fps")
+		print(f"    ⚡ Realtime Ratio: {performance.get('realtime_ratio', 0):.2f}x")
+		print(f"    📈 Efficiency: {performance.get('efficiency_rating', 'N/A')}")
+
+	# Dive Statistics
+	dive_count = len(metrics.get('dive_durations', []))
+	print(f"\n🏊 Dive Statistics:")
+	print(f"    📊 Total Dives Found: {dive_count}")
+
+	if dive_count > 0:
+		dive_stats = metrics.get('dive_stats', {})
+		print(f"    ⏱️  Average Duration: {dive_stats.get('average_duration', 0):.2f}s")
+		print(f"    🏆 Longest Dive: #{dive_stats.get('longest_dive', {}).get('dive_number', 'N/A')} ({dive_stats.get('longest_dive', {}).get('duration_seconds', 0):.2f}s)")
+		print(f"    ⚡ Shortest Dive: #{dive_stats.get('shortest_dive', {}).get('dive_number', 'N/A')} ({dive_stats.get('shortest_dive', {}).get('duration_seconds', 0):.2f}s)")
+		print(f"    🏊 Total Dive Time: {dive_stats.get('total_dive_time', 0):.2f}s")
+
+		# Individual dive details
+		print(f"\n    📝 Individual Dive Details:")
+		for dive_info in metrics.get('dive_durations', []):
+			print(f"       🏊 Dive #{dive_info['dive_number']}: {dive_info['duration_seconds']:.2f}s ({dive_info['duration_frames']} frames)")
+
+	# Extraction Performance
+	extraction_times = metrics.get('extraction_times', [])
+	if extraction_times:
+		print(f"\n💾 Extraction Performance:")
+		avg_extraction = sum(e['extraction_time'] for e in extraction_times) / len(extraction_times)
+		print(f"    ⚡ Average Extraction: {avg_extraction:.2f}s")
+		print(f"    📊 Extraction Details:")
+		for ext_info in extraction_times:
+			print(f"       💾 Dive #{ext_info['dive_number']}: {ext_info['extraction_time']:.2f}s")
+
+	# Output Information
+	print(f"\n📁 Output:")
+	print(f"    📂 Directory: {output_dir}")
+	print(f"    📄 Files Created: {dive_count} dive video(s)")
+
+	print("="*80)
+
+
+def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
+									  splash_zone_top_norm=None, splash_zone_bottom_norm=None,
+									  diver_zone_norm=None, debug=False, splash_method='motion_intensity',
+									  use_threading=True, enable_pose_optimization=True, output_dir=None):
+	"""
+	Real-time dive detection and extraction: spawns background threads immediately when dives are detected.
+	This allows extraction to happen in parallel with continued detection for maximum efficiency.
+
+	Returns:
+		Dictionary containing dives list and comprehensive metrics
+	"""
+	import threading
+	import queue
+	import time
+	import os
+	from concurrent.futures import ThreadPoolExecutor, as_completed
+
+	# 📊 METRICS TRACKING INITIALIZATION
+	start_time = time.time()
+	metrics = {
+		'start_time': start_time,
+		'detection_start_time': None,
+		'detection_end_time': None,
+		'extraction_end_time': None,
+		'total_processing_time': 0,
+		'detection_time': 0,
+		'extraction_time': 0,
+		'total_frames_processed': 0,
+		'video_info': {},
+		'dives_detected': 0,
+		'high_confidence_dives': 0,
+		'low_confidence_dives': 0,
+		'dive_durations': [],
+		'extraction_times': [],
+		'performance': {},
+		'settings': {
+			'threading_used': use_threading,
+			'optimization_used': enable_pose_optimization,
+			'splash_method': splash_method
+		}
+	}
+
+	# Get comprehensive video info
+	video_fps = get_video_fps(video_path)
+	cap = cv2.VideoCapture(video_path)
+	total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	video_duration_seconds = total_video_frames / video_fps if video_fps > 0 else 0
+	video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+	video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+	cap.release()
+
+	metrics['video_info'] = {
+		'filename': os.path.basename(video_path),
+		'fps': video_fps,
+		'total_frames': total_video_frames,
+		'duration_seconds': video_duration_seconds,
+		'width': video_width,
+		'height': video_height,
+		'file_size_mb': os.path.getsize(video_path) / (1024 * 1024) if os.path.exists(video_path) else 0
+	}
+	threading_text = "with threading" if use_threading else "without threading"
+	print(f"🚀 Real-time dive detection and extraction at {video_fps:.1f}fps {threading_text}")
+	print(f"📊 Video: {video_width}x{video_height}, {total_video_frames} frames, {video_duration_seconds:.1f}s, {metrics['video_info']['file_size_mb']:.1f}MB")
+
+	if output_dir:
+		print(f"📁 Extraction output directory: {output_dir}")
+
+	dives = []
+	start_search_at_idx = 0
+	extraction_futures = []
+	dive_counter = 0
+
+	# Create thread pool for immediate extractions
+	max_extraction_workers = min(4, os.cpu_count() or 2)
+	executor = ThreadPoolExecutor(max_workers=max_extraction_workers)
+	print(f"🎬 Using {max_extraction_workers} background extraction threads")
+
+	# Start detection timing
+	metrics['detection_start_time'] = time.time()
+
+	try:
+		while True:
+			frame_gen = frame_generator(video_path)
+			for _ in range(start_search_at_idx):
+				try:
+					next(frame_gen)
+				except StopIteration:
+					frame_gen = None
+					break
+
+			if frame_gen is None:
+				print("  -> No more dives found in the remainder of the video.")
+				break
+
+			print(f"🔍 Searching for dive from frame {start_search_at_idx}...")
+			start_idx, end_idx, confidence = find_next_dive(
+				frame_gen, board_y_norm, water_y_norm,
+				splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
+				start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
+				video_fps=video_fps, use_threading=use_threading, enable_pose_optimization=enable_pose_optimization
+			)
+
+			if start_idx is not None and end_idx is not None:
+				min_dive_frames = int(1.0 * video_fps)  # Dynamic minimum based on framerate
+				if (end_idx - start_idx) >= min_dive_frames:
+					confidence_text = f"({confidence} confidence)" if confidence == 'low' else ""
+					print(f"  ✅ Found dive {dive_counter + 1}: Start {start_idx}, End {end_idx} {confidence_text}")
+
+					# 📊 Calculate dive metrics
+					dive_duration_frames = end_idx - start_idx
+					dive_duration_seconds = dive_duration_frames / video_fps
+					dive_start_time = start_idx / video_fps
+
+					dives.append((start_idx, end_idx, confidence))
+					metrics['dives_detected'] += 1
+					metrics['dive_durations'].append({
+						'dive_number': dive_counter + 1,
+						'start_frame': start_idx,
+						'end_frame': end_idx,
+						'duration_frames': dive_duration_frames,
+						'duration_seconds': dive_duration_seconds,
+						'start_time_seconds': dive_start_time,
+						'confidence': confidence
+					})
+
+					if confidence == 'high':
+						metrics['high_confidence_dives'] += 1
+					else:
+						metrics['low_confidence_dives'] += 1
+
+					# 🚀 IMMEDIATELY SPAWN BACKGROUND EXTRACTION THREAD
+					if output_dir:
+						print(f"    🎬 Starting background extraction for dive {dive_counter + 1}...")
+						future = executor.submit(
+							extract_and_save_dive,
+							video_path, dive_counter, start_idx, end_idx, confidence,
+							output_dir, diver_zone_norm, video_fps=video_fps
+						)
+						extraction_futures.append((future, dive_counter + 1))
+
+					dive_counter += 1
+					start_search_at_idx = end_idx + 1
+				else:
+					print(f"  ⚠️  Dive ignored (too short): Start {start_idx}, End {end_idx}")
+					start_search_at_idx = end_idx + 1
+			else:
+				print("  -> No more dives found in the remainder of the video.")
+				break
+
+		# Mark end of detection phase
+		metrics['detection_end_time'] = time.time()
+		metrics['detection_time'] = metrics['detection_end_time'] - metrics['detection_start_time']
+		metrics['total_frames_processed'] = start_search_at_idx
+
+		# Wait for all background extractions to complete
+		if extraction_futures:
+			print(f"\n⏳ Waiting for {len(extraction_futures)} background extractions to complete...")
+			completed = 0
+
+			for future, dive_num in extraction_futures:
+				try:
+					extraction_duration = future.result()  # This now returns the actual extraction time
+					completed += 1
+					print(f"    ✅ Dive {dive_num} extraction completed in {extraction_duration:.1f}s ({completed}/{len(extraction_futures)})")
+
+					# Track extraction timing
+					metrics['extraction_times'].append({
+						'dive_number': dive_num,
+						'extraction_time': extraction_duration
+					})
+
+				except Exception as e:
+					print(f"    ❌ Dive {dive_num} extraction failed: {e}")
+
+			print(f"🎉 All extractions completed!")
+
+		# Mark end of extraction phase
+		metrics['extraction_end_time'] = time.time()
+		metrics['extraction_time'] = metrics['extraction_end_time'] - metrics['detection_end_time'] if metrics['detection_end_time'] else 0
+
+	finally:
+		executor.shutdown(wait=True)
+
+	# 📊 FINAL METRICS CALCULATION
+	end_time = time.time()
+	metrics['total_processing_time'] = end_time - start_time
+
+	# Calculate performance metrics
+	if metrics['detection_time'] > 0:
+		detection_fps = metrics['total_frames_processed'] / metrics['detection_time']
+		realtime_ratio = detection_fps / video_fps if video_fps > 0 else 0
+
+		metrics['performance'] = {
+			'detection_fps': detection_fps,
+			'realtime_ratio': realtime_ratio,
+			'efficiency_rating': 'Excellent' if realtime_ratio >= 1.0 else 'Good' if realtime_ratio >= 0.8 else 'Needs Improvement'
+		}
+
+	# Calculate dive statistics
+	if metrics['dive_durations']:
+		durations = [d['duration_seconds'] for d in metrics['dive_durations']]
+		metrics['dive_stats'] = {
+			'longest_dive': max(metrics['dive_durations'], key=lambda x: x['duration_seconds']),
+			'shortest_dive': min(metrics['dive_durations'], key=lambda x: x['duration_seconds']),
+			'average_duration': sum(durations) / len(durations),
+			'total_dive_time': sum(durations)
+		}
+
+	# Print comprehensive metrics
+	print_detailed_metrics(metrics, output_dir)
+
+	return {'dives': dives, 'metrics': metrics}
+
 
 def detect_all_dives(video_path, board_y_norm, water_y_norm,
 					 splash_zone_top_norm=None, splash_zone_bottom_norm=None,
-					 diver_zone_norm=None, debug=False, splash_method='motion_intensity', use_threading=True):
+					 diver_zone_norm=None, debug=False, splash_method='motion_intensity',
+					 use_threading=True, enable_pose_optimization=False):
 	"""
-	Detects all dive sequences in the video using the new detection logic.
+	Legacy function: Detects all dive sequences sequentially (detection first, then extraction).
+	For real-time detection+extraction, use detect_and_extract_dives_realtime() instead.
 	Returns a list of (start_idx, end_idx, confidence) tuples for each dive.
 	"""
 
@@ -1043,7 +1361,7 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 			frame_gen, board_y_norm, water_y_norm,
 			splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
 			start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
-			video_fps=video_fps, use_threading=use_threading
+			video_fps=video_fps, use_threading=use_threading, enable_pose_optimization=enable_pose_optimization
 		)
 
 		if start_idx is not None and end_idx is not None:
@@ -1065,7 +1383,10 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	Extracts a single dive, annotates it with pose, and saves it as a separate video file.
 	Uses ROI processing for efficiency when diver_zone_norm is provided.
 	Uses native video framerate if video_fps is not specified.
+	Returns the actual extraction time for metrics tracking.
 	"""
+	extraction_start_time = time.time()
+
 	if video_fps is None:
 		video_fps = get_video_fps(video_path)
 
@@ -1180,7 +1501,12 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 
 	pose.close()
 	out.release()
+
+	extraction_end_time = time.time()
+	extraction_duration = extraction_end_time - extraction_start_time
+
 	print(f"Successfully saved {output_path}")
+	return extraction_duration
 
 # ==================== USER INTERFACE FUNCTIONS ====================
 def get_board_y_px(frame):
@@ -1536,8 +1862,8 @@ def main():
 	board_y_norm = board_y_px / first_frame.shape[0]
 	water_y_norm = 0.95  # bottom 5% is water
 
-	# Step 4: detect all dives
-	print(f"\nStarting dive detection with new algorithm using '{splash_method}' splash detection...")
+	# Step 4: Real-time dive detection and extraction
+	print(f"\nStarting real-time dive detection and extraction using '{splash_method}' splash detection...")
 	threading_status = "with threading enabled" if use_threading else "with threading disabled"
 	print(f"🚀 Performance mode: {threading_status}")
 	if debug:
@@ -1546,59 +1872,43 @@ def main():
 	else:
 		print("⚡ Fast mode - no debug window (use --debug for visual analysis)")
 		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
-	dives = detect_all_dives(
+
+	print(f"💡 Real-time mode: Extraction will start immediately when each dive is detected!")
+
+	dives = detect_and_extract_dives_realtime(
 		video_path, board_y_norm, water_y_norm,
 		splash_zone_top_norm=splash_zone_top_norm,
 		splash_zone_bottom_norm=splash_zone_bottom_norm,
 		diver_zone_norm=diver_zone_norm,
 		debug=debug,
 		splash_method=splash_method,
-		use_threading=use_threading
+		use_threading=use_threading,
+		output_dir=output_dir
 	)
 
-	if not dives:
+	# Handle both old and new return formats for compatibility
+	if isinstance(dives, dict) and 'dives' in dives:
+		result = dives
+		dives_list = result['dives']
+		metrics = result.get('metrics', {})
+	else:
+		# Backward compatibility - old format returned just the list
+		dives_list = dives
+		metrics = {}
+
+	if not dives_list:
 		print("\nNo dives were detected in the video.")
 		return
 
-	print(f"\nDetected {len(dives)} dives. Now extracting and saving each one using parallel processing...")
+	print(f"\n🎉 Real-time processing complete!")
+	print(f"📊 Summary: {len(dives_list)} dives detected and extracted")
+	print(f"📁 All dive videos saved in '{output_dir}'")
+	print(f"💡 Real-time advantage: Extraction started immediately upon detection, maximizing parallel processing efficiency!")
 
-	# Step 5: extract, annotate, and save each dive using threading
-	import time
-	start_time = time.time()
-
-	# Determine optimal number of workers (max 4 to avoid overwhelming the system)
-	max_workers = min(4, len(dives), os.cpu_count() or 2)
-	print(f"Using {max_workers} worker threads for parallel extraction...")
-
-	with ThreadPoolExecutor(max_workers=max_workers) as executor:
-		# Submit all extraction tasks
-		future_to_dive = {
-			executor.submit(
-				extract_and_save_dive,
-				video_path, i, start_idx, end_idx, confidence,
-				output_dir, diver_zone_norm, video_fps=video_fps
-			): (i+1, start_idx, end_idx, confidence)
-			for i, (start_idx, end_idx, confidence) in enumerate(dives)
-		}
-
-		# Track completion
-		completed = 0
-		total = len(dives)
-
-		# Collect results as they complete
-		for future in as_completed(future_to_dive):
-			dive_num, start_idx, end_idx, confidence = future_to_dive[future]
-			try:
-				future.result()  # This will raise any exception that occurred
-				completed += 1
-				print(f"✅ Completed dive {dive_num}/{total} (frames {start_idx}-{end_idx}, {confidence} confidence) - {completed}/{total} done")
-			except Exception as e:
-				print(f"❌ Error extracting dive {dive_num}: {e}")
-				completed += 1
-
-	extraction_time = time.time() - start_time
-	print(f"\n🎉 Extraction complete in {extraction_time:.1f}s! Dives saved in '{output_dir}'.")
-	print(f"⚡ Parallel processing saved approximately {extraction_time * (len(dives) - 1) / len(dives):.1f}s compared to sequential processing.")
+	# Display detailed metrics if available
+	if metrics:
+		print("\nDetailed analysis metrics:")
+		print_detailed_metrics(metrics, output_dir)
 
 
 if __name__ == "__main__":
