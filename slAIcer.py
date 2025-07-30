@@ -9,10 +9,355 @@ import contextlib
 import cv2
 import numpy as np
 import argparse
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import queue
 import time
+import json
+import pickle
+from datetime import datetime
+
+# ==================== PERFORMANCE CACHE SYSTEM ====================
+class PerformanceCache:
+    """Manages performance statistics cache for dynamic progress estimation."""
+
+    def __init__(self, cache_file="dive_performance_cache.pkl"):
+        self.cache_file = cache_file
+        self.stats = self.load_cache()
+
+    def load_cache(self):
+        """Load cached performance statistics."""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'rb') as f:
+                    return pickle.load(f)
+        except Exception:
+            pass
+
+        # Default statistics if no cache exists
+        return {
+            'detection_fps': 15.0,  # Average detection speed
+            'extraction_time_per_frame': 0.13,  # Average seconds per frame extraction
+            'total_runs': 0,
+            'last_updated': None
+        }
+
+    def save_cache(self):
+        """Save performance statistics to cache."""
+        try:
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(self.stats, f)
+        except Exception as e:
+            print(f"Warning: Could not save performance cache: {e}")
+
+    def update_stats(self, metrics):
+        """Update performance statistics with new run data."""
+        if not metrics:
+            return
+
+        # Update detection speed
+        performance = metrics.get('performance', {})
+        detection_fps = performance.get('detection_fps', 0)
+
+        # Update extraction performance
+        extraction_times = metrics.get('extraction_times', [])
+        if extraction_times:
+            total_extraction_time = sum(e['extraction_time'] for e in extraction_times)
+            total_frames = sum(d['duration_frames'] for d in metrics.get('dive_durations', []))
+            if total_frames > 0:
+                extraction_time_per_frame = total_extraction_time / total_frames
+            else:
+                extraction_time_per_frame = self.stats['extraction_time_per_frame']
+        else:
+            extraction_time_per_frame = self.stats['extraction_time_per_frame']
+
+        # Weighted average with previous stats (more weight to recent data)
+        weight = 0.3 if self.stats['total_runs'] > 0 else 1.0
+
+        if detection_fps > 0:
+            self.stats['detection_fps'] = (1 - weight) * self.stats['detection_fps'] + weight * detection_fps
+
+        self.stats['extraction_time_per_frame'] = (1 - weight) * self.stats['extraction_time_per_frame'] + weight * extraction_time_per_frame
+        self.stats['total_runs'] += 1
+        self.stats['last_updated'] = datetime.now().isoformat()
+
+        self.save_cache()
+
+class CustomProgressBar:
+    """Custom progress bar without external dependencies."""
+
+    def __init__(self, total, description="Progress", width=50):
+        self.total = total
+        self.current = 0
+        self.description = description
+        self.width = width
+        self.start_time = time.time()
+        self.last_update = 0
+        self.update_interval = 0.1  # Update every 100ms
+
+    def update(self, progress=1, description=None):
+        """Update progress bar."""
+        self.current += progress
+        current_time = time.time()
+
+        # Throttle updates to avoid excessive output
+        if current_time - self.last_update < self.update_interval and self.current < self.total:
+            return
+
+        self.last_update = current_time
+
+        if description:
+            self.description = description
+
+        self._draw()
+
+    def set_total(self, new_total):
+        """Update the total for dynamic progress tracking."""
+        self.total = new_total
+        self._draw()
+
+    def _draw(self):
+        """Draw the progress bar."""
+        if self.total <= 0:
+            return
+
+        percent = min(100, (self.current / self.total) * 100)
+        filled = int(self.width * self.current / self.total)
+        bar = '█' * filled + '░' * (self.width - filled)
+
+        elapsed = time.time() - self.start_time
+        if self.current > 0 and self.current < self.total:
+            eta = (elapsed / self.current) * (self.total - self.current)
+            eta_str = f"ETA: {eta:.0f}s"
+        else:
+            eta_str = "ETA: --"
+
+        # Clear line and print progress
+        print(f"\r{self.description}: |{bar}| {percent:.1f}% ({self.current}/{self.total}) {eta_str}", end='', flush=True)
+
+    def close(self):
+        """Finish the progress bar."""
+        self.current = self.total
+        self._draw()
+        print()  # New line
+
+class DiveProgressTracker:
+    """Tracks progress through detection and extraction phases with dynamic estimation."""
+
+    def __init__(self, video_frames, video_fps, performance_cache):
+        self.video_frames = video_frames
+        self.video_fps = video_fps
+        self.cache = performance_cache
+
+        # Phase 1: Detection
+        self.detection_fps = self.cache.stats['detection_fps']
+        estimated_detection_time = video_frames / self.detection_fps
+        self.detection_progress = CustomProgressBar(
+            total=int(estimated_detection_time * 10),  # Update every 0.1s
+            description="🔍 Detecting dives",
+            width=40
+        )
+
+        # Phase 2: Extraction (initialized later)
+        self.extraction_progress = None
+        self.detected_dives = []
+        self.extraction_started = False
+
+        # Timing
+        self.detection_start = time.time()
+        self.extraction_start = None
+
+    def update_detection_progress(self, frames_processed):
+        """Update detection progress based on frames processed."""
+        if not self.detection_progress:
+            return
+
+        elapsed = time.time() - self.detection_start
+        expected_progress = int(elapsed * 10)  # Progress units (0.1s intervals)
+        self.detection_progress.update(0, f"🔍 Detecting dives ({frames_processed}/{self.video_frames} frames)")
+
+        # Update progress to match elapsed time
+        if expected_progress > self.detection_progress.current:
+            self.detection_progress.current = min(expected_progress, self.detection_progress.total)
+
+    def detection_complete(self, detected_dives):
+        """Mark detection phase complete and initialize extraction tracking."""
+        if self.detection_progress:
+            self.detection_progress.close()
+
+        self.detected_dives = detected_dives
+
+        if not detected_dives:
+            print("🏊 No dives detected - skipping extraction phase")
+            return
+
+        # Calculate total extraction time estimate
+        total_frames = sum(dive['duration_frames'] for dive in detected_dives)
+        estimated_extraction_time = total_frames * self.cache.stats['extraction_time_per_frame']
+
+        self.extraction_progress = CustomProgressBar(
+            total=len(detected_dives),
+            description=f"💾 Extracting {len(detected_dives)} dives",
+            width=40
+        )
+
+        self.extraction_start = time.time()
+        print(f"\n💾 Starting extraction of {len(detected_dives)} dives (estimated: {estimated_extraction_time:.1f}s)")
+
+    def add_detected_dive(self, dive_info):
+        """Add a detected dive to tracking."""
+        self.detected_dives.append(dive_info)
+
+    def dive_extraction_complete(self, dive_number):
+        """Mark a dive extraction as complete."""
+        if self.extraction_progress:
+            remaining = len(self.detected_dives) - self.extraction_progress.current - 1
+            self.extraction_progress.update(1, f"💾 Extracting dives ({remaining} remaining)")
+
+    def extraction_complete(self):
+        """Mark all extractions complete."""
+        if self.extraction_progress:
+            self.extraction_progress.close()
+
+        extraction_time = time.time() - self.extraction_start if self.extraction_start else 0
+        print(f"✅ All extractions completed in {extraction_time:.1f}s")
+
+def write_compact_log(metrics, log_file="dive_analysis.log"):
+    """Write compact machine-readable log for performance tracking."""
+    try:
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'video_info': metrics.get('video_info', {}),
+            'performance': metrics.get('performance', {}),
+            'dive_count': len(metrics.get('dive_durations', [])),
+            'total_dive_frames': sum(d['duration_frames'] for d in metrics.get('dive_durations', [])),
+            'extraction_times': metrics.get('extraction_times', []),
+            'detection_time': metrics.get('detection_time', 0),
+            'extraction_time': metrics.get('extraction_time', 0)
+        }
+
+        with open(log_file, 'a') as f:
+            f.write(json.dumps(log_entry) + '\n')
+
+    except Exception as e:
+        print(f"Warning: Could not write compact log: {e}")
+
+# ==================== MEDIAPIPE SETUP ====================
+
+# ==================== DYNAMIC PROGRESS TRACKER ====================
+class LegacyProgressTracker:
+    """Manages dynamic progress tracking for dive detection and extraction."""
+
+    def __init__(self, total_frames, cache):
+        self.total_frames = total_frames
+        self.cache = cache
+        self.phase = "detection"  # "detection" or "extraction"
+
+        # Phase 1: Detection progress
+        self.detection_start_time = time.time()
+        self.estimated_detection_time = cache.estimate_detection_time(total_frames)
+
+        # Progress bars
+        self.detection_pbar = None
+        self.extraction_pbar = None
+
+        # Dive tracking
+        self.detected_dives = []
+        self.completed_extractions = 0
+
+        self.init_detection_progress()
+
+    def init_detection_progress(self):
+        """Initialize detection phase progress bar."""
+        est_time_min = self.estimated_detection_time / 60
+        # self.detection_pbar = tqdm(
+        #     total=self.total_frames,
+        #     desc=f"🔍 Detection (est. {est_time_min:.1f}min)",
+        #     unit="frames",
+        #     colour="blue",
+        #     dynamic_ncols=True
+        # )
+        self.detection_pbar = None  # Placeholder
+
+    def update_detection_progress(self, current_frame):
+        """Update detection progress."""
+        if self.detection_pbar:
+            # Calculate dynamic rate based on actual performance
+            elapsed = time.time() - self.detection_start_time
+            if elapsed > 1:  # After 1 second, use real rate
+                actual_fps = current_frame / elapsed
+                remaining_frames = self.total_frames - current_frame
+                est_remaining_time = remaining_frames / actual_fps if actual_fps > 0 else 0
+
+                # Update description with real-time estimate
+                est_min = est_remaining_time / 60
+                desc = f"🔍 Detection ({actual_fps:.1f}fps, {est_min:.1f}min left)"
+                self.detection_pbar.set_description(desc)
+
+            self.detection_pbar.update(current_frame - self.detection_pbar.n)
+
+    def add_detected_dive(self, dive_info):
+        """Add a detected dive for extraction tracking."""
+        self.detected_dives.append(dive_info)
+
+    def finish_detection_phase(self):
+        """Transition from detection to extraction phase."""
+        if self.detection_pbar:
+            self.detection_pbar.close()
+
+        if not self.detected_dives:
+            return
+
+        # Calculate total extraction work
+        total_dive_frames = sum(d['duration_frames'] for d in self.detected_dives)
+        estimated_total_extraction = self.cache.estimate_extraction_time(total_dive_frames)
+
+        self.phase = "extraction"
+        est_time_min = estimated_total_extraction / 60
+
+        # self.extraction_pbar = tqdm(
+        #     total=len(self.detected_dives),
+        #     desc=f"💾 Extraction (est. {est_time_min:.1f}min)",
+        #     unit="dives",
+        #     colour="green",
+        #     dynamic_ncols=True
+        # )
+        self.extraction_pbar = None  # Placeholder
+
+    def update_extraction_progress(self, completed_dive_info):
+        """Update extraction progress when a dive completes."""
+        if not self.extraction_pbar:
+            return
+
+        self.completed_extractions += 1
+
+        # Calculate remaining work
+        remaining_dives = len(self.detected_dives) - self.completed_extractions
+        if remaining_dives > 0:
+            # Estimate remaining time based on remaining dive frames
+            remaining_frames = sum(
+                d['duration_frames'] for d in self.detected_dives[self.completed_extractions:]
+            )
+            est_remaining_time = self.cache.estimate_extraction_time(remaining_frames)
+            est_min = est_remaining_time / 60
+
+            desc = f"💾 Extraction ({remaining_dives} left, {est_min:.1f}min)"
+            self.extraction_pbar.set_description(desc)
+
+        self.extraction_pbar.update(1)
+
+    def finish_extraction_phase(self):
+        """Finish extraction phase."""
+        if self.extraction_pbar:
+            self.extraction_pbar.close()
+
+    def close(self):
+        """Clean up progress bars."""
+        if self.detection_pbar:
+            self.detection_pbar.close()
+        if self.extraction_pbar:
+            self.extraction_pbar.close()
 
 # ==================== LOGGING SUPPRESSION ====================
 # Comprehensive log suppression for MediaPipe and TensorFlow
@@ -1046,6 +1391,12 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	if debug:
 		cv2.destroyAllWindows()
 
+	# Adjust frame indices to account for the start_search_at_idx offset
+	if start_idx is not None:
+		start_idx += start_search_at_idx
+	if end_idx is not None:
+		end_idx += start_search_at_idx
+
 	return start_idx, end_idx, confidence
 
 def print_detailed_metrics(metrics, output_dir):
@@ -1111,10 +1462,47 @@ def print_detailed_metrics(metrics, output_dir):
 	print("="*80)
 
 
+def save_compact_performance_log(metrics, output_dir):
+	"""Save a compact, machine-readable performance log for future reference."""
+	log_data = {
+		'timestamp': datetime.now().isoformat(),
+		'video_info': metrics.get('video_info', {}),
+		'performance': {
+			'detection_fps': metrics.get('performance', {}).get('detection_fps', 0),
+			'detection_time': metrics.get('detection_time', 0),
+			'total_frames_processed': metrics.get('total_frames_processed', 0),
+			'total_processing_time': metrics.get('total_processing_time', 0)
+		},
+		'dive_stats': {
+			'total_dives': len(metrics.get('dive_durations', [])),
+			'total_dive_frames': sum(d['duration_frames'] for d in metrics.get('dive_durations', [])),
+			'total_extraction_time': sum(e['extraction_time'] for e in metrics.get('extraction_times', [])),
+			'avg_extraction_per_frame': 0
+		}
+	}
+
+	# Calculate extraction time per frame
+	total_frames = log_data['dive_stats']['total_dive_frames']
+	total_extraction = log_data['dive_stats']['total_extraction_time']
+	if total_frames > 0:
+		log_data['dive_stats']['avg_extraction_per_frame'] = total_extraction / total_frames
+
+	# Save to output directory
+	if output_dir:
+		log_file = os.path.join(output_dir, "performance_log.json")
+		try:
+			with open(log_file, 'w') as f:
+				json.dump(log_data, f, indent=2)
+			print(f"📄 Compact performance log saved: {log_file}")
+		except Exception as e:
+			print(f"Warning: Could not save performance log: {e}")
+
+
 def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 									  splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 									  diver_zone_norm=None, debug=False, splash_method='motion_intensity',
-									  use_threading=True, enable_pose_optimization=True, output_dir=None):
+									  use_threading=True, enable_pose_optimization=True, output_dir=None,
+									  show_pose_overlay=False, preserve_audio=True):
 	"""
 	Real-time dive detection and extraction: spawns background threads immediately when dives are detected.
 	This allows extraction to happen in parallel with continued detection for maximum efficiency.
@@ -1127,6 +1515,9 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 	import time
 	import os
 	from concurrent.futures import ThreadPoolExecutor, as_completed
+
+	# 📊 PERFORMANCE CACHE AND PROGRESS TRACKING
+	performance_cache = PerformanceCache()
 
 	# 📊 METRICS TRACKING INITIALIZATION
 	start_time = time.time()
@@ -1178,6 +1569,10 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 	if output_dir:
 		print(f"📁 Extraction output directory: {output_dir}")
 
+	# Initialize progress tracker
+	progress_tracker = DiveProgressTracker(total_video_frames, video_fps, performance_cache)
+	print(f"📈 Using cached performance data from {performance_cache.stats['total_runs']} previous runs")
+
 	dives = []
 	start_search_at_idx = 0
 	extraction_futures = []
@@ -1206,6 +1601,10 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 				break
 
 			print(f"🔍 Searching for dive from frame {start_search_at_idx}...")
+
+			# Update detection progress
+			progress_tracker.update_detection_progress(start_search_at_idx)
+
 			start_idx, end_idx, confidence = find_next_dive(
 				frame_gen, board_y_norm, water_y_norm,
 				splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
@@ -1226,7 +1625,7 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 
 					dives.append((start_idx, end_idx, confidence))
 					metrics['dives_detected'] += 1
-					metrics['dive_durations'].append({
+					dive_info = {
 						'dive_number': dive_counter + 1,
 						'start_frame': start_idx,
 						'end_frame': end_idx,
@@ -1234,7 +1633,11 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 						'duration_seconds': dive_duration_seconds,
 						'start_time_seconds': dive_start_time,
 						'confidence': confidence
-					})
+					}
+					metrics['dive_durations'].append(dive_info)
+
+					# Add to progress tracker
+					progress_tracker.add_detected_dive(dive_info)
 
 					if confidence == 'high':
 						metrics['high_confidence_dives'] += 1
@@ -1247,7 +1650,8 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 						future = executor.submit(
 							extract_and_save_dive,
 							video_path, dive_counter, start_idx, end_idx, confidence,
-							output_dir, diver_zone_norm, video_fps=video_fps
+							output_dir, diver_zone_norm, video_fps=video_fps,
+							show_pose_overlay=show_pose_overlay, preserve_audio=preserve_audio
 						)
 						extraction_futures.append((future, dive_counter + 1))
 
@@ -1265,6 +1669,9 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 		metrics['detection_time'] = metrics['detection_end_time'] - metrics['detection_start_time']
 		metrics['total_frames_processed'] = start_search_at_idx
 
+		# Transition to extraction phase
+		progress_tracker.detection_complete(metrics['dive_durations'])
+
 		# Wait for all background extractions to complete
 		if extraction_futures:
 			print(f"\n⏳ Waiting for {len(extraction_futures)} background extractions to complete...")
@@ -1276,6 +1683,9 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 					completed += 1
 					print(f"    ✅ Dive {dive_num} extraction completed in {extraction_duration:.1f}s ({completed}/{len(extraction_futures)})")
 
+					# Update progress tracker
+					progress_tracker.dive_extraction_complete(dive_num)
+
 					# Track extraction timing
 					metrics['extraction_times'].append({
 						'dive_number': dive_num,
@@ -1286,6 +1696,7 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 					print(f"    ❌ Dive {dive_num} extraction failed: {e}")
 
 			print(f"🎉 All extractions completed!")
+			progress_tracker.extraction_complete()
 
 		# Mark end of extraction phase
 		metrics['extraction_end_time'] = time.time()
@@ -1319,12 +1730,16 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 			'total_dive_time': sum(durations)
 		}
 
+	# Update performance cache for future runs
+	performance_cache.update_stats(metrics)
+
+	# Save compact performance log
+	write_compact_log(metrics, "dive_analysis.log")
+
 	# Print comprehensive metrics
 	print_detailed_metrics(metrics, output_dir)
 
 	return {'dives': dives, 'metrics': metrics}
-
-
 def detect_all_dives(video_path, board_y_norm, water_y_norm,
 					 splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 					 diver_zone_norm=None, debug=False, splash_method='motion_intensity',
@@ -1378,12 +1793,16 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 			break
 	return dives
 
-def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidence, output_dir, diver_zone_norm=None, video_fps=None):
+def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidence, output_dir, diver_zone_norm=None, video_fps=None, show_pose_overlay=False, preserve_audio=True):
 	"""
-	Extracts a single dive, annotates it with pose, and saves it as a separate video file.
+	Extracts a single dive, optionally annotates it with pose, and saves it as a separate video file.
 	Uses ROI processing for efficiency when diver_zone_norm is provided.
 	Uses native video framerate if video_fps is not specified.
 	Returns the actual extraction time for metrics tracking.
+
+	Args:
+		show_pose_overlay: If True, draws pose landmarks on the video
+		preserve_audio: If True, uses FFmpeg to preserve audio from the source video
 	"""
 	extraction_start_time = time.time()
 
@@ -1394,6 +1813,16 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	output_path = os.path.join(output_dir, f"dive_{dive_number+1}{confidence_suffix}.mp4")
 	print(f"Extracting dive {dive_number+1} to {output_path} (frames {start_idx}-{end_idx}, {confidence} confidence) at {video_fps:.1f}fps")
 
+	if show_pose_overlay:
+		print(f"  → Pose overlay: enabled")
+	else:
+		print(f"  → Pose overlay: disabled")
+
+	if preserve_audio:
+		print(f"  → Audio preservation: enabled (requires FFmpeg)")
+	else:
+		print(f"  → Audio preservation: disabled")
+
 	# Get the first frame to determine video dimensions
 	try:
 		_, first_frame = next(frame_generator(video_path))  # Use native framerate
@@ -1401,15 +1830,25 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	except StopIteration:
 		raise ValueError("Cannot extract from an empty video.")
 
+	# Determine temporary output path for video processing
+	temp_output_path = output_path
+	if preserve_audio:
+		temp_output_path = output_path.replace('.mp4', '_temp_video_only.mp4')
+
 	fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-	out = cv2.VideoWriter(output_path, fourcc, video_fps, (w, h))
+	out = cv2.VideoWriter(temp_output_path, fourcc, video_fps, (w, h))
 
-	mp_pose = mp.solutions.pose
-	mp_drawing = mp.solutions.drawing_utils
+	# Initialize pose detection only if needed
+	mp_pose = None
+	mp_drawing = None
+	pose = None
 
-	# Suppress stderr completely during pose initialization to avoid repeated MediaPipe logs
-	with suppress_stderr():
-		pose = mp_pose.Pose(static_image_mode=True)
+	if show_pose_overlay:
+		mp_pose = mp.solutions.pose
+		mp_drawing = mp.solutions.drawing_utils
+		# Suppress stderr completely during pose initialization to avoid repeated MediaPipe logs
+		with suppress_stderr():
+			pose = mp_pose.Pose(static_image_mode=True)
 
 	# Create a fresh generator for processing
 	dive_frame_gen = frame_generator(video_path)  # Use native framerate
@@ -1424,66 +1863,69 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 		annotated_frame = frame.copy()
 		h, w = annotated_frame.shape[:2]
 
-		# Draw pose landmarks - use ROI processing for efficiency
-		rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+		# Draw pose landmarks - use ROI processing for efficiency (only if enabled)
+		if show_pose_overlay and pose is not None:
+			rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
 
-		if diver_zone_norm is not None:
-			# Extract diver detection zone coordinates
-			left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
-			left = int(left_norm * w)
-			top = int(top_norm * h)
-			right = int(right_norm * w)
-			bottom = int(bottom_norm * h)
+			if diver_zone_norm is not None:
+				# Extract diver detection zone coordinates
+				left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
+				left = int(left_norm * w)
+				top = int(top_norm * h)
+				right = int(right_norm * w)
+				bottom = int(bottom_norm * h)
 
-			# Extract ROI and process only that region
-			roi = rgb[top:bottom, left:right]
-			if roi.size > 0:
-				res = pose.process(roi)
+				# Extract ROI and process only that region
+				roi = rgb[top:bottom, left:right]
+				if roi.size > 0:
+					res = pose.process(roi)
+					if res.pose_landmarks:
+						# Manually draw landmarks by converting ROI coordinates to full frame
+						for landmark in res.pose_landmarks.landmark:
+							# Convert from ROI coordinates to full frame coordinates
+							full_x = int(landmark.x * (right - left) + left)
+							full_y = int(landmark.y * (bottom - top) + top)
+							cv2.circle(annotated_frame, (full_x, full_y), 3, (0,255,0), -1)
+
+						# Draw connections manually for key body parts
+						landmarks = res.pose_landmarks.landmark
+						# Draw connections manually for key body parts
+						landmarks = res.pose_landmarks.landmark
+						connections = [
+							# Body outline
+							(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+							(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
+							(mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
+							(mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
+							(mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
+							(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
+							(mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
+							(mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
+							(mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
+							(mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+							(mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
+							(mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+						]
+
+						for connection in connections:
+							start_lm = landmarks[connection[0]]
+							end_lm = landmarks[connection[1]]
+
+							start_x = int(start_lm.x * (right - left) + left)
+							start_y = int(start_lm.y * (bottom - top) + top)
+							end_x = int(end_lm.x * (right - left) + left)
+							end_y = int(end_lm.y * (bottom - top) + top)
+
+							cv2.line(annotated_frame, (start_x, start_y), (end_x, end_y), (0,0,255), 2)
+			else:
+				# Fallback: process entire frame
+				res = pose.process(rgb)
 				if res.pose_landmarks:
-					# Manually draw landmarks by converting ROI coordinates to full frame
-					for landmark in res.pose_landmarks.landmark:
-						# Convert from ROI coordinates to full frame coordinates
-						full_x = int(landmark.x * (right - left) + left)
-						full_y = int(landmark.y * (bottom - top) + top)
-						cv2.circle(annotated_frame, (full_x, full_y), 3, (0,255,0), -1)
-
-					# Draw connections manually for key body parts
-					landmarks = res.pose_landmarks.landmark
-					connections = [
-						# Body outline
-						(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
-						(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
-						(mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
-						(mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
-						(mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
-						(mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
-						(mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
-						(mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
-						(mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
-						(mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
-						(mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
-						(mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
-					]
-
-					for connection in connections:
-						start_lm = landmarks[connection[0]]
-						end_lm = landmarks[connection[1]]
-
-						start_x = int(start_lm.x * (right - left) + left)
-						start_y = int(start_lm.y * (bottom - top) + top)
-						end_x = int(end_lm.x * (right - left) + left)
-						end_y = int(end_lm.y * (bottom - top) + top)
-
-						cv2.line(annotated_frame, (start_x, start_y), (end_x, end_y), (0,0,255), 2)
-		else:
-			# Fallback: process entire frame
-			res = pose.process(rgb)
-			if res.pose_landmarks:
-				mp_drawing.draw_landmarks(
-					annotated_frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-					mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
-					mp_drawing.DrawingSpec(color=(0,0,255), thickness=2, circle_radius=2)
-				)
+					mp_drawing.draw_landmarks(
+						annotated_frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+						mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
+						mp_drawing.DrawingSpec(color=(0,0,255), thickness=2, circle_radius=2)
+					)
 
 		# Add takeoff/entry text with confidence indicator
 		if idx == start_idx:
@@ -1499,8 +1941,57 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 
 		out.write(annotated_frame)
 
-	pose.close()
+	# Clean up pose resources if used
+	if pose is not None:
+		pose.close()
 	out.release()
+
+	# Handle audio preservation using FFmpeg
+	if preserve_audio:
+		print(f"  🎵 Merging audio with video using FFmpeg...")
+		try:
+			# Calculate time range for audio extraction
+			start_time_seconds = start_idx / video_fps
+			duration_seconds = (end_idx - start_idx + 1) / video_fps
+
+			# Use FFmpeg to extract the video segment with audio
+			ffmpeg_cmd = [
+				'ffmpeg', '-y',  # -y to overwrite output file
+				'-i', video_path,  # Input video with audio
+				'-i', temp_output_path,  # Input video-only file
+				'-ss', str(start_time_seconds),  # Start time
+				'-t', str(duration_seconds),  # Duration
+				'-c:v', 'copy',  # Copy video from the video-only file
+				'-c:a', 'aac',  # Encode audio to AAC
+				'-map', '1:v:0',  # Use video from second input (our processed video)
+				'-map', '0:a:0',  # Use audio from first input (original video)
+				'-shortest',  # Stop when shortest stream ends
+				output_path
+			]
+
+			# Run FFmpeg command
+			result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+
+			if result.returncode == 0:
+				# Remove temporary video-only file
+				os.remove(temp_output_path)
+				print(f"  ✅ Audio successfully preserved in {output_path}")
+			else:
+				print(f"  ⚠️  FFmpeg failed, keeping video-only version:")
+				print(f"     Error: {result.stderr}")
+				# Rename temp file to final output
+				os.rename(temp_output_path, output_path)
+
+		except subprocess.TimeoutExpired:
+			print(f"  ⚠️  FFmpeg timed out, keeping video-only version")
+			os.rename(temp_output_path, output_path)
+		except FileNotFoundError:
+			print(f"  ⚠️  FFmpeg not found, keeping video-only version")
+			print(f"     Install FFmpeg to enable audio preservation")
+			os.rename(temp_output_path, output_path)
+		except Exception as e:
+			print(f"  ⚠️  Audio preservation failed: {e}")
+			os.rename(temp_output_path, output_path)
 
 	extraction_end_time = time.time()
 	extraction_duration = extraction_end_time - extraction_start_time
@@ -1795,6 +2286,10 @@ def main():
 						help="Enable debug window for visual analysis (slower but helpful for tuning)")
 	parser.add_argument("--no-threading", action="store_true",
 						help="Disable threaded processing (use for debugging performance issues)")
+	parser.add_argument("--show-pose-overlay", action="store_true",
+						help="Enable pose overlay in extracted dive videos (disabled by default)")
+	parser.add_argument("--no-audio", action="store_true",
+						help="Disable audio preservation in extracted dive videos (enabled by default)")
 	args = parser.parse_args()
 
 	video_path = args.video_path
@@ -1802,6 +2297,8 @@ def main():
 	splash_method = args.splash_method
 	debug = args.debug
 	use_threading = not args.no_threading  # Default to True, disable with --no-threading
+	show_pose_overlay = args.show_pose_overlay  # Default to False, enable with --show-pose-overlay
+	preserve_audio = not args.no_audio  # Default to True, disable with --no-audio
 
 	# Create output directory if it doesn't exist
 	os.makedirs(output_dir, exist_ok=True)
@@ -1883,7 +2380,9 @@ def main():
 		debug=debug,
 		splash_method=splash_method,
 		use_threading=use_threading,
-		output_dir=output_dir
+		output_dir=output_dir,
+		show_pose_overlay=show_pose_overlay,
+		preserve_audio=preserve_audio
 	)
 
 	# Handle both old and new return formats for compatibility

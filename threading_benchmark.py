@@ -160,17 +160,17 @@ def main():
         print("🎯 Interactive zone setup (same as slAIcer.py)")
         board_y_norm, water_y_norm, splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm = setup_detection_zones(args.video_path)
 
-    print(f"\n📋 Detection zones configured:")
+    print("\n📋 Detection zones configured:")
     print(f"  Board Y: {board_y_norm:.3f}")
     print(f"  Water Y: {water_y_norm:.3f}")
     if splash_zone_top_norm and splash_zone_bottom_norm:
         print(f"  Splash zone: {splash_zone_top_norm:.3f} to {splash_zone_bottom_norm:.3f}")
     else:
-        print(f"  Splash zone: Default")
+        print("  Splash zone: Default")
     if diver_zone_norm:
         print(f"  Diver zone: ({diver_zone_norm[0]:.3f},{diver_zone_norm[1]:.3f}) to ({diver_zone_norm[2]:.3f},{diver_zone_norm[3]:.3f})")
     else:
-        print(f"  Diver zone: Full frame")
+        print("  Diver zone: Full frame")
 
     # Test threaded processing FIRST to catch errors quickly
     print("\n📊 Testing Threaded Processing (checking for errors first):")

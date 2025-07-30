@@ -230,7 +230,7 @@ def test_splash_methods(video_path, splash_zone_top=0.8, splash_zone_bottom=0.95
         votes = details['votes']
         vote_counts[votes] += 1
 
-    print(f"\nCombined method vote distribution:")
+    print("\nCombined method vote distribution:")
     for votes, count in vote_counts.items():
         percentage = count / len(results['combined_details']) * 100 if results['combined_details'] else 0
         print(f"  {votes} votes: {count:3d} frames ({percentage:5.1f}%)")
