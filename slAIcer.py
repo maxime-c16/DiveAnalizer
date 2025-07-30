@@ -270,7 +270,6 @@ class LegacyProgressTracker:
 
     def init_detection_progress(self):
         """Initialize detection phase progress bar."""
-        est_time_min = self.estimated_detection_time / 60
         # self.detection_pbar = tqdm(
         #     total=self.total_frames,
         #     desc=f"🔍 Detection (est. {est_time_min:.1f}min)",
@@ -309,12 +308,7 @@ class LegacyProgressTracker:
         if not self.detected_dives:
             return
 
-        # Calculate total extraction work
-        total_dive_frames = sum(d['duration_frames'] for d in self.detected_dives)
-        estimated_total_extraction = self.cache.estimate_extraction_time(total_dive_frames)
-
         self.phase = "extraction"
-        est_time_min = estimated_total_extraction / 60
 
         # self.extraction_pbar = tqdm(
         #     total=len(self.detected_dives),
@@ -726,8 +720,8 @@ def auto_detect_board_y(frame):
 	y_lines = []
 	h, w = frame.shape[:2]
 	if lines is not None:
-		for l in lines:
-			_, y1, _, y2 = l[0]
+		for line in lines:
+			_, y1, _, y2 = line[0]
 			# Only consider (nearly) horizontal lines away from the bottom
 			if abs(y2 - y1) < 10 and min(y1,y2)>h//6 and max(y1,y2)<int(h*0.97):
 				y_lines.append((y1 + y2) // 2)
@@ -878,7 +872,7 @@ def detect_splash_combined(splash_band, prev_band, splash_thresh=7.0):
 						mean_movement = np.mean(movement)
 						flow_splash = mean_movement > 3.0
 						flow_score = mean_movement
-	except:
+	except Exception:
 		pass
 
 	contour_splash, contour_score = detect_splash_contour_analysis(splash_band, prev_band)
@@ -949,7 +943,6 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 	print("🚀 Using improved threaded dive detection for better performance...")
 
 	# Use batched processing to reduce threading overhead
-	batch_size = 8  # Process 8 frames at a time
 	pose_detector = ThreadedPoseDetector(max_workers=3)
 
 	try:
@@ -988,7 +981,6 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 		diver_detection_threshold = 3
 
 		# Batch processing variables
-		frame_batch = []
 		pose_futures = []
 
 		# Process frames with batched pose detection
@@ -1040,7 +1032,7 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 							else:
 								pose_landmarks_full_frame = [(lm.x, lm.y, lm.z) for lm in pose_result.pose_landmarks.landmark]
 						pose_futures.pop(0)  # Remove processed item
-					except:
+					except Exception:
 						# Pose detection not ready yet, use previous state or default
 						pose_futures.pop(0)  # Remove failed item
 						pass
@@ -1142,7 +1134,7 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 			if future is not None:
 				try:
 					future.cancel()
-				except:
+				except Exception:
 					pass
 		pose_detector.shutdown()
 
@@ -1191,10 +1183,6 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	pose_cooldown_frames = int(0.2 * video_fps)  # Skip ~0.2s worth of frames
 	pose_detections_skipped = 0
 	total_pose_opportunities = 0
-
-	# Debug window management
-	skipping_to_action = debug
-	debug_frame_delay = max(1, int(1000 / video_fps))
 
 	# For splash detection
 	prev_gray = None
@@ -1407,7 +1395,7 @@ def print_detailed_metrics(metrics, output_dir):
 
 	# Video Information
 	video_info = metrics.get('video_info', {})
-	print(f"🎥 Video Information:")
+	print("🎥 Video Information:")
 	print(f"    📁 File: {video_info.get('filename', 'N/A')}")
 	print(f"    📏 Resolution: {video_info.get('width', 'N/A')}x{video_info.get('height', 'N/A')}")
 	print(f"    🎬 FPS: {video_info.get('fps', 'N/A'):.1f}")
@@ -1415,7 +1403,7 @@ def print_detailed_metrics(metrics, output_dir):
 	print(f"    💾 File Size: {video_info.get('file_size_mb', 'N/A'):.1f} MB")
 
 	# Processing Performance
-	print(f"\n⚡ Processing Performance:")
+	print("\n⚡ Processing Performance:")
 	print(f"    🔍 Detection Time: {metrics.get('detection_time', 0):.2f}s")
 	print(f"    💾 Extraction Time: {metrics.get('extraction_time', 0):.2f}s")
 	print(f"    ⏱️  Total Processing: {metrics.get('total_processing_time', 0):.2f}s")
@@ -1429,7 +1417,7 @@ def print_detailed_metrics(metrics, output_dir):
 
 	# Dive Statistics
 	dive_count = len(metrics.get('dive_durations', []))
-	print(f"\n🏊 Dive Statistics:")
+	print("\n🏊 Dive Statistics:")
 	print(f"    📊 Total Dives Found: {dive_count}")
 
 	if dive_count > 0:
@@ -1440,22 +1428,22 @@ def print_detailed_metrics(metrics, output_dir):
 		print(f"    🏊 Total Dive Time: {dive_stats.get('total_dive_time', 0):.2f}s")
 
 		# Individual dive details
-		print(f"\n    📝 Individual Dive Details:")
+		print("\n    📝 Individual Dive Details:")
 		for dive_info in metrics.get('dive_durations', []):
 			print(f"       🏊 Dive #{dive_info['dive_number']}: {dive_info['duration_seconds']:.2f}s ({dive_info['duration_frames']} frames)")
 
 	# Extraction Performance
 	extraction_times = metrics.get('extraction_times', [])
 	if extraction_times:
-		print(f"\n💾 Extraction Performance:")
+		print("\n💾 Extraction Performance:")
 		avg_extraction = sum(e['extraction_time'] for e in extraction_times) / len(extraction_times)
 		print(f"    ⚡ Average Extraction: {avg_extraction:.2f}s")
-		print(f"    📊 Extraction Details:")
+		print("    📊 Extraction Details:")
 		for ext_info in extraction_times:
 			print(f"       💾 Dive #{ext_info['dive_number']}: {ext_info['extraction_time']:.2f}s")
 
 	# Output Information
-	print(f"\n📁 Output:")
+	print("\n📁 Output:")
 	print(f"    📂 Directory: {output_dir}")
 	print(f"    📄 Files Created: {dive_count} dive video(s)")
 
@@ -1510,11 +1498,9 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 	Returns:
 		Dictionary containing dives list and comprehensive metrics
 	"""
-	import threading
-	import queue
 	import time
 	import os
-	from concurrent.futures import ThreadPoolExecutor, as_completed
+	from concurrent.futures import ThreadPoolExecutor
 
 	# 📊 PERFORMANCE CACHE AND PROGRESS TRACKING
 	performance_cache = PerformanceCache()
@@ -1695,7 +1681,7 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 				except Exception as e:
 					print(f"    ❌ Dive {dive_num} extraction failed: {e}")
 
-			print(f"🎉 All extractions completed!")
+			print("🎉 All extractions completed!")
 			progress_tracker.extraction_complete()
 
 		# Mark end of extraction phase
@@ -1814,14 +1800,14 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	print(f"Extracting dive {dive_number+1} to {output_path} (frames {start_idx}-{end_idx}, {confidence} confidence) at {video_fps:.1f}fps")
 
 	if show_pose_overlay:
-		print(f"  → Pose overlay: enabled")
+		print("  → Pose overlay: enabled")
 	else:
-		print(f"  → Pose overlay: disabled")
+		print("  → Pose overlay: disabled")
 
 	if preserve_audio:
-		print(f"  → Audio preservation: enabled (requires FFmpeg)")
+		print("  → Audio preservation: enabled (requires FFmpeg)")
 	else:
-		print(f"  → Audio preservation: disabled")
+		print("  → Audio preservation: disabled")
 
 	# Get the first frame to determine video dimensions
 	try:
@@ -1948,7 +1934,7 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 
 	# Handle audio preservation using FFmpeg
 	if preserve_audio:
-		print(f"  🎵 Merging audio with video using FFmpeg...")
+		print("  🎵 Merging audio with video using FFmpeg...")
 		try:
 			# Calculate time range for audio extraction
 			start_time_seconds = start_idx / video_fps
@@ -1977,17 +1963,17 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 				os.remove(temp_output_path)
 				print(f"  ✅ Audio successfully preserved in {output_path}")
 			else:
-				print(f"  ⚠️  FFmpeg failed, keeping video-only version:")
+				print("  ⚠️  FFmpeg failed, keeping video-only version:")
 				print(f"     Error: {result.stderr}")
 				# Rename temp file to final output
 				os.rename(temp_output_path, output_path)
 
 		except subprocess.TimeoutExpired:
-			print(f"  ⚠️  FFmpeg timed out, keeping video-only version")
+			print("  ⚠️  FFmpeg timed out, keeping video-only version")
 			os.rename(temp_output_path, output_path)
 		except FileNotFoundError:
-			print(f"  ⚠️  FFmpeg not found, keeping video-only version")
-			print(f"     Install FFmpeg to enable audio preservation")
+			print("  ⚠️  FFmpeg not found, keeping video-only version")
+			print("     Install FFmpeg to enable audio preservation")
 			os.rename(temp_output_path, output_path)
 		except Exception as e:
 			print(f"  ⚠️  Audio preservation failed: {e}")
@@ -2370,7 +2356,7 @@ def main():
 		print("⚡ Fast mode - no debug window (use --debug for visual analysis)")
 		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
 
-	print(f"💡 Real-time mode: Extraction will start immediately when each dive is detected!")
+	print("💡 Real-time mode: Extraction will start immediately when each dive is detected!")
 
 	dives = detect_and_extract_dives_realtime(
 		video_path, board_y_norm, water_y_norm,
@@ -2399,10 +2385,10 @@ def main():
 		print("\nNo dives were detected in the video.")
 		return
 
-	print(f"\n🎉 Real-time processing complete!")
+	print("\n🎉 Real-time processing complete!")
 	print(f"📊 Summary: {len(dives_list)} dives detected and extracted")
 	print(f"📁 All dive videos saved in '{output_dir}'")
-	print(f"💡 Real-time advantage: Extraction started immediately upon detection, maximizing parallel processing efficiency!")
+	print("💡 Real-time advantage: Extraction started immediately upon detection, maximizing parallel processing efficiency!")
 
 	# Display detailed metrics if available
 	if metrics:
