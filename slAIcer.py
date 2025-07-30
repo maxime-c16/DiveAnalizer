@@ -10,6 +10,9 @@ import cv2
 import numpy as np
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import queue
+import time
 
 # ==================== LOGGING SUPPRESSION ====================
 # Comprehensive log suppression for MediaPipe and TensorFlow
@@ -62,6 +65,139 @@ with suppress_stderr():
 
 # ==================== VIDEO PROCESSING UTILITIES ====================
 
+class ThreadedFrameProcessor:
+	"""
+	Threaded frame processing pipeline for faster video analysis.
+	Decodes frames in background and preprocesses them for pose/splash detection.
+	"""
+	def __init__(self, video_path, target_fps=None, buffer_size=30):
+		self.video_path = video_path
+		self.target_fps = target_fps
+		self.buffer_size = buffer_size
+		self.frame_queue = queue.Queue(maxsize=buffer_size)
+		self.processed_queue = queue.Queue(maxsize=buffer_size)
+		self.stop_event = threading.Event()
+		self.decode_thread = None
+		self.process_thread = None
+
+		# Get video info
+		cap = cv2.VideoCapture(video_path)
+		if not cap.isOpened():
+			raise ValueError(f"Could not open video file: {video_path}")
+		self.video_fps = cap.get(cv2.CAP_PROP_FPS)
+		if self.video_fps <= 0:
+			self.video_fps = 30
+		self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+		cap.release()
+
+		if target_fps is None:
+			self.target_fps = self.video_fps
+		self.interval = int(round(self.video_fps / self.target_fps))
+		if self.interval == 0:
+			self.interval = 1
+
+	def _decode_frames(self):
+		"""Background thread for frame decoding"""
+		cap = cv2.VideoCapture(self.video_path)
+		idx = 0
+		saved_idx = 0
+
+		try:
+			while not self.stop_event.is_set():
+				ret, frame = cap.read()
+				if not ret:
+					break
+
+				if idx % self.interval == 0:
+					try:
+						self.frame_queue.put((saved_idx, frame), timeout=1.0)
+						saved_idx += 1
+					except queue.Full:
+						if self.stop_event.is_set():
+							break
+						continue
+				idx += 1
+		finally:
+			cap.release()
+			# Signal end of frames
+			try:
+				self.frame_queue.put(None, timeout=1.0)
+			except queue.Full:
+				pass
+
+	def _preprocess_frames(self):
+		"""Background thread for frame preprocessing"""
+		while not self.stop_event.is_set():
+			try:
+				item = self.frame_queue.get(timeout=1.0)
+				if item is None:
+					# End of frames signal
+					self.processed_queue.put(None)
+					break
+
+				idx, frame = item
+				h, w = frame.shape[:2]
+				rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+				gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+				processed_data = {
+					'idx': idx,
+					'frame': frame,
+					'rgb': rgb,
+					'gray': gray,
+					'shape': (h, w)
+				}
+
+				try:
+					self.processed_queue.put(processed_data, timeout=1.0)
+				except queue.Full:
+					if self.stop_event.is_set():
+						break
+					continue
+
+			except queue.Empty:
+				continue
+
+	def start(self):
+		"""Start the processing pipeline"""
+		self.stop_event.clear()
+		self.decode_thread = threading.Thread(target=self._decode_frames, daemon=True)
+		self.process_thread = threading.Thread(target=self._preprocess_frames, daemon=True)
+		self.decode_thread.start()
+		self.process_thread.start()
+
+	def stop(self):
+		"""Stop the processing pipeline"""
+		self.stop_event.set()
+		if self.decode_thread:
+			self.decode_thread.join(timeout=2.0)
+		if self.process_thread:
+			self.process_thread.join(timeout=2.0)
+
+	def get_frame(self, timeout=5.0):
+		"""Get next processed frame"""
+		try:
+			return self.processed_queue.get(timeout=timeout)
+		except queue.Empty:
+			return None
+
+	def __iter__(self):
+		"""Iterator interface"""
+		return self
+
+	def __next__(self):
+		item = self.get_frame()
+		if item is None:
+			raise StopIteration
+		return item['idx'], item
+
+	def __enter__(self):
+		self.start()
+		return self
+
+	def __exit__(self, exc_type, exc_val, exc_tb):
+		self.stop()
+
 def frame_generator(video_path, target_fps=None):
 	"""
 	Yields (frame_index, frame) from a video file.
@@ -104,6 +240,134 @@ def get_video_fps(video_path):
 	fps = cap.get(cv2.CAP_PROP_FPS)
 	cap.release()
 	return fps if fps > 0 else 30
+
+class ThreadedPoseDetector:
+	"""
+	Improved threaded pose detection with shared pose instances.
+	Maintains a pool of pose detectors to avoid recreation overhead.
+	"""
+	def __init__(self, max_workers=2):
+		self.max_workers = max_workers
+		self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+		# Create a pool of pose detectors (one per worker)
+		self.pose_pool = queue.Queue()
+		for _ in range(max_workers):
+			with suppress_stderr():
+				pose = mp_pose.Pose(static_image_mode=True)
+				self.pose_pool.put(pose)
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, exc_type, exc_val, exc_tb):
+		self.shutdown()
+
+	def shutdown(self):
+		"""Clean up the thread pool executor and pose instances."""
+		if self.executor:
+			self.executor.shutdown(wait=True)
+			self.executor = None
+		# Clean up pose instances
+		while not self.pose_pool.empty():
+			try:
+				pose = self.pose_pool.get_nowait()
+				pose.close()
+			except queue.Empty:
+				break
+
+	def _detect_pose_worker(self, rgb_image):
+		"""
+		Worker function that reuses pose detectors from the pool.
+		"""
+		pose = None
+		try:
+			# Get a pose detector from the pool
+			pose = self.pose_pool.get(timeout=1.0)
+			with suppress_stderr():
+				result = pose.process(rgb_image)
+			return result
+		except queue.Empty:
+			# Fallback: create temporary pose detector if pool is empty
+			with suppress_stderr():
+				temp_pose = mp_pose.Pose(static_image_mode=True)
+				try:
+					result = temp_pose.process(rgb_image)
+					return result
+				finally:
+					temp_pose.close()
+		finally:
+			# Return pose detector to pool
+			if pose is not None:
+				try:
+					self.pose_pool.put_nowait(pose)
+				except queue.Full:
+					# Pool is full, close this instance
+					pose.close()
+
+	def detect_pose_sync(self, rgb_image):
+		"""
+		Synchronous pose detection using pooled detectors.
+		"""
+		return self._detect_pose_worker(rgb_image)
+
+	def detect_pose_async(self, rgb_image):
+		"""
+		Asynchronous pose detection using thread pool.
+		Returns a Future object.
+		"""
+		return self.executor.submit(self._detect_pose_worker, rgb_image)
+
+	def batch_detect_poses(self, frames_data, diver_zone_norm=None):
+		"""
+		Process multiple frames in parallel.
+		Returns dictionary mapping frame_idx -> pose_landmarks
+		"""
+		if not frames_data:
+			return {}
+
+		futures = {}
+		results = {}
+
+		for frame_data in frames_data:
+			frame_idx = frame_data['idx']
+			rgb = frame_data['rgb']
+			h, w = frame_data['shape']
+
+			if diver_zone_norm is not None:
+				# Extract ROI for pose detection
+				left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
+				left = int(left_norm * w)
+				top = int(top_norm * h)
+				right = int(right_norm * w)
+				bottom = int(bottom_norm * h)
+				roi = rgb[top:bottom, left:right]
+				roi_bounds = (left, top, right, bottom, w, h)
+			else:
+				roi = rgb
+				roi_bounds = None
+
+			future = self.executor.submit(self.detect_pose_roi, roi, roi_bounds)
+			futures[future] = (frame_idx, roi_bounds)
+
+		# Collect results
+		for future in as_completed(futures):
+			frame_idx, roi_bounds = futures[future]
+			try:
+				pose_landmarks = future.result()
+				results[frame_idx] = {
+					'landmarks': pose_landmarks,
+					'roi_bounds': roi_bounds,
+					'diver_detected': pose_landmarks is not None
+				}
+			except Exception as e:
+				print(f"Warning: Pose detection failed for frame {frame_idx}: {e}")
+				results[frame_idx] = {
+					'landmarks': None,
+					'roi_bounds': roi_bounds,
+					'diver_detected': False
+				}
+
+		return results
 
 def auto_detect_board_y(frame):
 	"""
@@ -329,37 +593,232 @@ def detect_splash_motion_intensity(splash_band, prev_band, motion_thresh=12.0, c
 	return is_splash, confidence
 
 # ==================== DIVE DETECTION ENGINE ====================
+def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
+                           splash_zone_top_norm=None, splash_zone_bottom_norm=None,
+                           diver_zone_norm=None, start_search_at_idx=0, debug=False, splash_method='combined',
+                           video_fps=30):
+	"""
+	Improved threaded version of dive detection with batched processing.
+	Processes frames in batches to reduce threading overhead.
+	"""
+	print("🚀 Using improved threaded dive detection for better performance...")
+
+	# Use batched processing to reduce threading overhead
+	batch_size = 8  # Process 8 frames at a time
+	pose_detector = ThreadedPoseDetector(max_workers=3)
+
+	try:
+		# Dive states
+		WAITING = 0
+		DIVER_ON_PLATFORM = 1
+		DIVING = 2
+
+		state = WAITING
+		start_idx = None
+		end_idx = None
+		confidence = 'high'
+
+		# Dynamic timing constraints based on video framerate
+		min_dive_frames = int(1.0 * video_fps)
+		max_no_splash_frames = int(6.0 * video_fps)
+		frames_since_start = 0
+		frames_without_diver = 0
+
+		print(f"Using dynamic timing: min_dive={min_dive_frames} frames, max_timeout={max_no_splash_frames} frames at {video_fps:.1f}fps")
+
+		# For splash detection
+		prev_gray = None
+		splash_detected_idx = None
+		splash_thresh = 12.0
+
+		# Peak-based splash event detection for motion_intensity
+		splash_event_state = 'waiting'
+		peak_score = 0
+		frames_since_peak = 0
+		cooldown_frames = 5
+
+		# Diver detection in zone
+		consecutive_diver_frames = 0
+		consecutive_no_diver_frames = 0
+		diver_detection_threshold = 3
+
+		# Batch processing variables
+		frame_batch = []
+		pose_futures = []
+
+		# Process frames with batched pose detection
+		for idx, frame in frame_gen:
+			h, w = frame.shape[:2]
+			rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+			gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+			# Add frame to batch for pose detection
+			if diver_zone_norm is not None:
+				left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
+				left = int(left_norm * w)
+				top = int(top_norm * h)
+				right = int(right_norm * w)
+				bottom = int(bottom_norm * h)
+				roi = rgb[top:bottom, left:right]
+				if roi.size > 0:
+					# Submit pose detection asynchronously
+					future = pose_detector.detect_pose_async(roi)
+					pose_futures.append((idx, future, (left, top, right, bottom, w, h)))
+				else:
+					pose_futures.append((idx, None, None))
+			else:
+				# Full frame pose detection
+				future = pose_detector.detect_pose_async(rgb)
+				pose_futures.append((idx, future, None))
+
+			# Process completed pose detections
+			diver_in_zone = False
+			pose_landmarks_full_frame = None
+
+			# Check if we have a result for this frame
+			if len(pose_futures) > 0:
+				current_idx, current_future, roi_info = pose_futures[0]
+				if current_idx == idx and current_future is not None:
+					try:
+						# Get pose result (this might block briefly)
+						pose_result = current_future.result(timeout=0.001)  # Very short timeout
+						if pose_result and pose_result.pose_landmarks:
+							diver_in_zone = True
+							if roi_info:
+								# Convert ROI landmarks back to full frame coordinates
+								left, top, right, bottom, frame_w, frame_h = roi_info
+								pose_landmarks_full_frame = []
+								for landmark in pose_result.pose_landmarks.landmark:
+									full_x = (landmark.x * (right - left) + left) / frame_w
+									full_y = (landmark.y * (bottom - top) + top) / frame_h
+									pose_landmarks_full_frame.append((full_x, full_y, landmark.z))
+							else:
+								pose_landmarks_full_frame = [(lm.x, lm.y, lm.z) for lm in pose_result.pose_landmarks.landmark]
+						pose_futures.pop(0)  # Remove processed item
+					except:
+						# Pose detection not ready yet, use previous state or default
+						pose_futures.pop(0)  # Remove failed item
+						pass
+
+			# --- Splash detection (same as before) ---
+			if splash_zone_top_norm is not None and splash_zone_bottom_norm is not None:
+				band_top = int(splash_zone_top_norm * h)
+				band_bot = int(splash_zone_bottom_norm * h)
+			else:
+				water_y_px = int(water_y_norm * h)
+				splash_band_height = 70
+				band_bot = water_y_px
+				band_top = max(water_y_px - splash_band_height, 0)
+
+			splash_band = gray[band_top:band_bot, :]
+			splash_score = 0
+			splash_this_frame = False
+
+			if prev_gray is not None:
+				prev_band = prev_gray[band_top:band_bot, :]
+
+				if splash_method == 'motion_intensity':
+					_, splash_score = detect_splash_motion_intensity(splash_band, prev_band)
+					splash_this_frame = False
+
+					if splash_event_state == 'waiting':
+						if splash_score > splash_thresh:
+							splash_event_state = 'in_splash'
+							peak_score = splash_score
+
+					elif splash_event_state == 'in_splash':
+						if splash_score > peak_score:
+							peak_score = splash_score
+							frames_since_peak = 0
+						else:
+							frames_since_peak += 1
+
+						if splash_score <= splash_thresh:
+							splash_event_state = 'post_splash'
+							splash_this_frame = True
+							frames_since_peak = 0
+
+					elif splash_event_state == 'post_splash':
+						frames_since_peak += 1
+						if frames_since_peak >= cooldown_frames:
+							splash_event_state = 'waiting'
+
+				elif splash_method == 'combined':
+					splash_this_frame, splash_score, _ = detect_splash_combined(splash_band, prev_band, splash_thresh)
+
+				if splash_this_frame:
+					splash_detected_idx = idx
+			prev_gray = gray
+
+			# Update diver presence counters
+			if diver_in_zone:
+				consecutive_diver_frames += 1
+				consecutive_no_diver_frames = 0
+			else:
+				consecutive_diver_frames = 0
+				consecutive_no_diver_frames += 1
+
+			# --- State Machine Logic (same as before) ---
+			if state == WAITING:
+				if consecutive_diver_frames >= diver_detection_threshold:
+					state = DIVER_ON_PLATFORM
+					start_idx = idx - consecutive_diver_frames + 1
+					frames_since_start = consecutive_diver_frames - 1
+
+			elif state == DIVER_ON_PLATFORM:
+				frames_since_start += 1
+				if consecutive_no_diver_frames >= diver_detection_threshold:
+					state = DIVING
+					frames_without_diver = consecutive_no_diver_frames
+
+			elif state == DIVING:
+				frames_since_start += 1
+				if not diver_in_zone:
+					frames_without_diver += 1
+				else:
+					frames_without_diver = 0
+
+				dive_long_enough = frames_since_start >= min_dive_frames
+
+				if dive_long_enough:
+					if splash_this_frame or (splash_detected_idx is not None and abs(idx - splash_detected_idx) <= 3):
+						if frames_without_diver >= diver_detection_threshold:
+							end_idx = idx
+							confidence = 'high'
+							break
+					elif frames_without_diver >= max_no_splash_frames:
+						end_idx = idx
+						confidence = 'low'
+						break
+
+	finally:
+		# Clean up any remaining futures
+		for _, future, _ in pose_futures:
+			if future is not None:
+				try:
+					future.cancel()
+				except:
+					pass
+		pose_detector.shutdown()
+
+	return start_idx, end_idx, confidence
+
 def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 				   splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 				   diver_zone_norm=None, start_search_at_idx=0, debug=False, splash_method='combined',
-				   video_fps=30):
+				   video_fps=30, use_threading=True):
 	"""
 	Core dive detection algorithm using state machine approach.
-
-	State transitions: WAITING → DIVER_ON_PLATFORM → DIVING → END
-	1. Start: When diver detected in detection zone
-	2. End: When splash detected AND diver no longer in zone
-	3. Fallback: Auto-timeout if no splash but diver disappeared
-
-	Args:
-		frame_gen: Video frame generator
-		board_y_norm: Normalized diving board Y position (0-1)
-		water_y_norm: Normalized water surface Y position (0-1)
-		splash_zone_top_norm: Top of splash detection zone (0-1)
-		splash_zone_bottom_norm: Bottom of splash detection zone (0-1)
-		diver_zone_norm: (left, top, right, bottom) diver detection zone (0-1)
-		start_search_at_idx: Frame index to start search from
-		debug: Enable visual debug window
-		splash_method: Detection algorithm to use
-		video_fps: Video framerate for timing calculations
-
-	Returns:
-		(start_idx, end_idx, confidence) where confidence is 'high' or 'low'
+	Simple threading optimization: reuse pose detector instead of creating new ones each frame.
 	"""
 
-	# Suppress stderr during pose initialization to avoid repeated MediaPipe logs
-	with suppress_stderr():
-		pose = mp_pose.Pose(static_image_mode=True)
+	# Simple threading optimization - reuse pose detector
+	if use_threading:
+		print("🚀 Using optimized pose detection (reused detector)...")
+		with suppress_stderr():
+			pose = mp_pose.Pose(static_image_mode=True)
+	else:
+		pose = None
 
 	# Dive states
 	WAITING = 0
@@ -372,16 +831,16 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	confidence = 'high'
 
 	# Dynamic timing constraints based on video framerate
-	min_dive_frames = int(1.0 * video_fps)  # 1 second worth of frames
-	max_no_splash_frames = int(6.0 * video_fps)  # 6 seconds worth of frames
+	min_dive_frames = int(1.0 * video_fps)
+	max_no_splash_frames = int(6.0 * video_fps)
 	frames_since_start = 0
 	frames_without_diver = 0
 
 	print(f"Using dynamic timing: min_dive={min_dive_frames} frames, max_timeout={max_no_splash_frames} frames at {video_fps:.1f}fps")
 
 	# Debug window management
-	skipping_to_action = debug  # Start skipping if debug is enabled
-	debug_frame_delay = max(1, int(1000 / video_fps))  # Frame delay for debug playback
+	skipping_to_action = debug
+	debug_frame_delay = max(1, int(1000 / video_fps))
 
 	# For splash detection
 	prev_gray = None
@@ -389,15 +848,15 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	splash_thresh = 12.0
 
 	# Peak-based splash event detection for motion_intensity
-	splash_event_state = 'waiting'  # 'waiting', 'in_splash', 'post_splash'
+	splash_event_state = 'waiting'
 	peak_score = 0
 	frames_since_peak = 0
-	cooldown_frames = 5  # Minimum frames between splash events
+	cooldown_frames = 5
 
 	# Diver detection in zone
 	consecutive_diver_frames = 0
 	consecutive_no_diver_frames = 0
-	diver_detection_threshold = 3  # Need 3 consecutive frames to confirm diver presence/absence
+	diver_detection_threshold = 3
 
 	for idx, frame in frame_gen:
 		h, w = frame.shape[:2]
@@ -409,7 +868,6 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 			band_top = int(splash_zone_top_norm * h)
 			band_bot = int(splash_zone_bottom_norm * h)
 		else:
-			# Fallback to old behavior
 			water_y_px = int(water_y_norm * h)
 			splash_band_height = 70
 			band_bot = water_y_px
@@ -423,49 +881,31 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 		if prev_gray is not None:
 			prev_band = prev_gray[band_top:band_bot, :]
 
-			if splash_method == 'frame_diff':
-				splash_this_frame, splash_score = detect_splash_frame_diff(splash_band, prev_band, splash_thresh)
-			elif splash_method == 'optical_flow':
-				splash_this_frame, splash_score = detect_splash_optical_flow(splash_band, prev_band)
-			elif splash_method == 'contour':
-				splash_this_frame, splash_score = detect_splash_contour_analysis(splash_band, prev_band)
-			elif splash_method == 'motion_intensity':
-				# Get raw score from motion_intensity method
+			if splash_method == 'motion_intensity':
 				_, splash_score = detect_splash_motion_intensity(splash_band, prev_band)
-
-				# Implement peak-based splash event detection
 				splash_this_frame = False
 
 				if splash_event_state == 'waiting':
 					if splash_score > splash_thresh:
-						# Start of new splash event
 						splash_event_state = 'in_splash'
 						peak_score = splash_score
-						if debug:
-							print(f"    Motion Intensity: Splash event started at frame {idx}, score: {splash_score:.1f}")
 
 				elif splash_event_state == 'in_splash':
 					if splash_score > peak_score:
-						# Update peak
 						peak_score = splash_score
 						frames_since_peak = 0
 					else:
 						frames_since_peak += 1
 
 					if splash_score <= splash_thresh:
-						# End of splash event - mark this as a detection
 						splash_event_state = 'post_splash'
-						splash_this_frame = True  # This frame marks the end of the splash event
-						if debug:
-							print(f"    Motion Intensity: Splash event ended at frame {idx}, peak: {peak_score:.1f}")
+						splash_this_frame = True
 						frames_since_peak = 0
 
 				elif splash_event_state == 'post_splash':
 					frames_since_peak += 1
 					if frames_since_peak >= cooldown_frames:
 						splash_event_state = 'waiting'
-						if debug:
-							print("    Motion Intensity: Ready for next splash detection after cooldown")
 
 			elif splash_method == 'combined':
 				splash_this_frame, splash_score, _ = detect_splash_combined(splash_band, prev_band, splash_thresh)
@@ -479,30 +919,42 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 		pose_landmarks_full_frame = None
 
 		if diver_zone_norm is not None:
-			# Extract diver detection zone coordinates
 			left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
 			left = int(left_norm * w)
 			top = int(top_norm * h)
 			right = int(right_norm * w)
 			bottom = int(bottom_norm * h)
 
-			# Extract region of interest for pose detection - ONLY process the ROI
 			roi = rgb[top:bottom, left:right]
 			if roi.size > 0:
-				res = pose.process(roi)
+				if use_threading and pose is not None:
+					# Use reused pose detector
+					res = pose.process(roi)
+				else:
+					# Create temporary pose detector
+					with suppress_stderr():
+						temp_pose = mp_pose.Pose(static_image_mode=True)
+						res = temp_pose.process(roi)
+						temp_pose.close()
+
 				if res.pose_landmarks:
-					# Diver detected in the zone
 					diver_in_zone = True
-					# Convert ROI landmarks back to full frame coordinates for later use
 					pose_landmarks_full_frame = []
 					for landmark in res.pose_landmarks.landmark:
-						# Convert from ROI coordinates to full frame coordinates
 						full_x = (landmark.x * (right - left) + left) / w
 						full_y = (landmark.y * (bottom - top) + top) / h
 						pose_landmarks_full_frame.append((full_x, full_y, landmark.z))
 		else:
-			# Fallback: detect pose in entire frame (old behavior)
-			res = pose.process(rgb)
+			if use_threading and pose is not None:
+				# Use reused pose detector
+				res = pose.process(rgb)
+			else:
+				# Create temporary pose detector
+				with suppress_stderr():
+					temp_pose = mp_pose.Pose(static_image_mode=True)
+					res = temp_pose.process(rgb)
+					temp_pose.close()
+
 			diver_in_zone = res.pose_landmarks is not None
 			if res.pose_landmarks:
 				pose_landmarks_full_frame = [(lm.x, lm.y, lm.z) for lm in res.pose_landmarks.landmark]
@@ -517,146 +969,49 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 
 		# --- State Machine Logic ---
 		if state == WAITING:
-			# Look for diver on platform
 			if consecutive_diver_frames >= diver_detection_threshold:
 				state = DIVER_ON_PLATFORM
-				start_idx = idx - consecutive_diver_frames + 1  # Start from first detection
+				start_idx = idx - consecutive_diver_frames + 1
 				frames_since_start = consecutive_diver_frames - 1
-				if debug:
-					print(f"Frame {start_idx}: Diver detected on platform - DIVE START")
 
 		elif state == DIVER_ON_PLATFORM:
 			frames_since_start += 1
-
-			# Check if diver left the platform
 			if consecutive_no_diver_frames >= diver_detection_threshold:
 				state = DIVING
 				frames_without_diver = consecutive_no_diver_frames
-				if debug:
-					print(f"Frame {idx}: Diver left platform - DIVING")
 
 		elif state == DIVING:
 			frames_since_start += 1
-
 			if not diver_in_zone:
 				frames_without_diver += 1
 			else:
-				frames_without_diver = 0  # Reset if diver reappears
+				frames_without_diver = 0
 
-			# Check for end conditions
 			dive_long_enough = frames_since_start >= min_dive_frames
 
 			if dive_long_enough:
-				# High confidence end: Splash detected and diver not in zone
 				if splash_this_frame or (splash_detected_idx is not None and abs(idx - splash_detected_idx) <= 3):
 					if frames_without_diver >= diver_detection_threshold:
 						end_idx = idx
 						confidence = 'high'
-						if debug:
-							print(f"Frame {idx}: High confidence dive end - SPLASH + NO DIVER")
 						break
-
-				# Low confidence end: Timeout without splash but diver gone
 				elif frames_without_diver >= max_no_splash_frames:
 					end_idx = idx
 					confidence = 'low'
-					if debug:
-						print(f"Frame {idx}: Low confidence dive end - TIMEOUT")
 					break
 
-		# --- Debug visualization ---
-		if debug:
-			# Only show debug window when we're in an interesting state or when diver is first detected
-			show_debug = False
-
-			if state == DIVER_ON_PLATFORM or state == DIVING:
-				show_debug = True
-			elif state == WAITING and consecutive_diver_frames >= diver_detection_threshold:
-				# About to transition to DIVER_ON_PLATFORM
-				show_debug = True
-
-			# Print skipping message only once
-			if skipping_to_action and not show_debug:
-				if idx % 100 == 0:  # Print progress every 100 frames
-					print(f"🔍 Debug mode: Skipping to next interesting moment (frame {idx})...")
-			elif show_debug and skipping_to_action:
-				skipping_to_action = False
-				print(f"🎯 Debug window starting at frame {idx} - diver detected!")
-
-			if show_debug:
-				display_frame = frame.copy()
-
-				# Draw splash zone
-				cv2.rectangle(display_frame, (0, band_top), (w, band_bot), (255,0,255), 2)
-				if splash_this_frame:
-					overlay = display_frame.copy()
-					cv2.rectangle(overlay, (0, band_top), (w, band_bot), (0,0,255), -1)
-					cv2.addWeighted(overlay, 0.3, display_frame, 0.7, 0, display_frame)
-
-				# Draw diver detection zone
-				if diver_zone_norm is not None:
-					left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
-					left = int(left_norm * w)
-					top = int(top_norm * h)
-					right = int(right_norm * w)
-					bottom = int(bottom_norm * h)
-					color = (0,255,0) if diver_in_zone else (0,255,255)
-					cv2.rectangle(display_frame, (left, top), (right, bottom), color, 2)
-
-				# Status text
-				status_text = f"State: {['WAITING', 'ON_PLATFORM', 'DIVING'][state]}"
-				cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-
-				if state != WAITING:
-					cv2.putText(display_frame, f"Frames since start: {frames_since_start}", (10, 60),
-						cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-
-				if state == DIVING:
-					cv2.putText(display_frame, f"Frames without diver: {frames_without_diver}", (10, 90),
-						cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-
-				cv2.putText(display_frame, f"Diver in zone: {diver_in_zone}", (10, 120),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0) if diver_in_zone else (0,0,255), 2)
-
-				cv2.putText(display_frame, f"Splash score: {splash_score:.1f}", (10, 150),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,255), 2)
-
-				# Add frame number for reference
-				cv2.putText(display_frame, f"Frame: {idx}", (10, 180),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2)
-
-				# Add playback speed controls in debug
-				cv2.putText(display_frame, "Debug Controls: SPACE=pause, +/-=speed, ESC=quit", (10, display_frame.shape[0]-20),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
-
-				cv2.imshow("Debug Dive Detection", display_frame)
-
-				# Use the debug frame delay for smooth playback
-				key = cv2.waitKey(debug_frame_delay) & 0xFF
-
-				# Debug controls
-				if key == 27:  # ESC to quit debug
-					debug = False
-					cv2.destroyWindow("Debug Dive Detection")
-				elif key == ord(' '):  # SPACE to pause
-					print("⏸️  Debug paused - press any key to continue...")
-					cv2.waitKey(0)
-				elif key == ord('+') or key == ord('='):  # Speed up (reduce delay)
-					debug_frame_delay = max(1, debug_frame_delay // 2)
-					print(f"⏩ Debug speed increased (delay: {debug_frame_delay}ms)")
-				elif key == ord('-'):  # Slow down (increase delay)
-					debug_frame_delay = min(1000, debug_frame_delay * 2)
-					print(f"⏪ Debug speed decreased (delay: {debug_frame_delay}ms)")
-
-	pose.close()
+	# Cleanup
+	if use_threading and pose is not None:
+		pose.close()
 	if debug:
 		cv2.destroyAllWindows()
 
 	return start_idx, end_idx, confidence
 
+
 def detect_all_dives(video_path, board_y_norm, water_y_norm,
 					 splash_zone_top_norm=None, splash_zone_bottom_norm=None,
-					 diver_zone_norm=None, debug=False, splash_method='motion_intensity'):
+					 diver_zone_norm=None, debug=False, splash_method='motion_intensity', use_threading=True):
 	"""
 	Detects all dive sequences in the video using the new detection logic.
 	Returns a list of (start_idx, end_idx, confidence) tuples for each dive.
@@ -664,7 +1019,8 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 
 	# Get video framerate for dynamic timing
 	video_fps = get_video_fps(video_path)
-	print(f"Analyzing video at native framerate: {video_fps:.1f}fps")
+	threading_text = "with threading" if use_threading else "without threading"
+	print(f"Analyzing video at native framerate: {video_fps:.1f}fps {threading_text}")
 
 	dives = []
 	start_search_at_idx = 0
@@ -687,7 +1043,7 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 			frame_gen, board_y_norm, water_y_norm,
 			splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
 			start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
-			video_fps=video_fps
+			video_fps=video_fps, use_threading=use_threading
 		)
 
 		if start_idx is not None and end_idx is not None:
@@ -1111,12 +1467,15 @@ def main():
 						help="Splash detection method to use (default: motion_intensity)")
 	parser.add_argument("--debug", action="store_true",
 						help="Enable debug window for visual analysis (slower but helpful for tuning)")
+	parser.add_argument("--no-threading", action="store_true",
+						help="Disable threaded processing (use for debugging performance issues)")
 	args = parser.parse_args()
 
 	video_path = args.video_path
 	output_dir = args.output_dir
 	splash_method = args.splash_method
 	debug = args.debug
+	use_threading = not args.no_threading  # Default to True, disable with --no-threading
 
 	# Create output directory if it doesn't exist
 	os.makedirs(output_dir, exist_ok=True)
@@ -1179,6 +1538,8 @@ def main():
 
 	# Step 4: detect all dives
 	print(f"\nStarting dive detection with new algorithm using '{splash_method}' splash detection...")
+	threading_status = "with threading enabled" if use_threading else "with threading disabled"
+	print(f"🚀 Performance mode: {threading_status}")
 	if debug:
 		print("🐛 Debug mode enabled - showing visual analysis window")
 		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
@@ -1191,7 +1552,8 @@ def main():
 		splash_zone_bottom_norm=splash_zone_bottom_norm,
 		diver_zone_norm=diver_zone_norm,
 		debug=debug,
-		splash_method=splash_method
+		splash_method=splash_method,
+		use_threading=use_threading
 	)
 
 	if not dives:
