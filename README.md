@@ -158,14 +158,14 @@ DiveAnalyzer uses three critical zones for optimal detection accuracy:
 ┌─────────────────────────────────────┐
 │                 SKY                 │
 ├─────────────────────────────────────┤
-│   🏗️ DIVING BOARD LINE              │
-│   👤 DIVER DETECTION ZONE           │
+│   🏗️ DIVING BOARD LINE             │
+│   👤 DIVER DETECTION ZONE          │
 │     ┌─────────────────┐             │
 │     │   Diving Area   │             │
 │     │                 │             │
 │     └─────────────────┘             │
 ├─────────────────────────────────────┤
-│  💦 SPLASH DETECTION ZONE           │
+│  💦 SPLASH DETECTION ZONE          │
 │  ══════════════════════════════════ │ ← Water Surface
 │                                     │
 │            POOL WATER               │
