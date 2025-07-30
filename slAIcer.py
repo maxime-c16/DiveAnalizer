@@ -98,7 +98,7 @@ def frame_generator(video_path, target_fps=None):
 	if interval == 0:
 		interval = 1
 
-	print(f"Video framerate: {video_fps:.1f}fps, Processing at: {target_fps:.1f}fps (interval: {interval})")
+	# print(f"Video framerate: {video_fps:.1f}fps, Processing at: {target_fps:.1f}fps (interval: {interval})")
 
 	idx = 0
 	saved_idx = 0
@@ -368,7 +368,7 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 	frames_since_start = 0
 	frames_without_diver = 0
 
-	print(f"Using dynamic timing: min_dive={min_dive_frames} frames, max_timeout={max_no_splash_frames} frames at {video_fps}fps")
+	print(f"Using dynamic timing: min_dive={min_dive_frames} frames, max_timeout={max_no_splash_frames} frames at {video_fps:.1f}fps")
 
 	# Debug window management
 	skipping_to_action = debug  # Start skipping if debug is enabled
@@ -1168,11 +1168,14 @@ def main():
 	parser.add_argument("--splash_method", default="motion_intensity",
 						choices=['frame_diff', 'optical_flow', 'contour', 'motion_intensity', 'combined'],
 						help="Splash detection method to use (default: motion_intensity)")
+	parser.add_argument("--debug", action="store_true",
+						help="Enable debug window for visual analysis (slower but helpful for tuning)")
 	args = parser.parse_args()
 
 	video_path = args.video_path
 	output_dir = args.output_dir
 	splash_method = args.splash_method
+	debug = args.debug
 
 	# Create output directory if it doesn't exist
 	os.makedirs(output_dir, exist_ok=True)
@@ -1235,13 +1238,18 @@ def main():
 
 	# Step 4: detect all dives
 	print(f"\nStarting dive detection with new algorithm using '{splash_method}' splash detection...")
-	print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
+	if debug:
+		print("🐛 Debug mode enabled - showing visual analysis window")
+		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
+	else:
+		print("⚡ Fast mode - no debug window (use --debug for visual analysis)")
+		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
 	dives = detect_all_dives(
 		video_path, board_y_norm, water_y_norm, takeoff_thresh=0.1,
 		splash_zone_top_norm=splash_zone_top_norm,
 		splash_zone_bottom_norm=splash_zone_bottom_norm,
 		diver_zone_norm=diver_zone_norm,
-		debug=True,
+		debug=debug,
 		splash_method=splash_method
 	)
 
@@ -1249,16 +1257,45 @@ def main():
 		print("\nNo dives were detected in the video.")
 		return
 
-	print(f"\nDetected {len(dives)} dives. Now extracting and saving each one.")
+	print(f"\nDetected {len(dives)} dives. Now extracting and saving each one using parallel processing...")
 
-	# Step 5: extract, annotate, and save each dive
-	for i, (start_idx, end_idx, confidence) in enumerate(dives):
-		extract_and_save_dive(
-			video_path, i, start_idx, end_idx, confidence,
-			output_dir, diver_zone_norm, video_fps=video_fps
-		)
+	# Step 5: extract, annotate, and save each dive using threading
+	import time
+	start_time = time.time()
 
-	print(f"\nExtraction complete. Dives saved in '{output_dir}'.")
+	# Determine optimal number of workers (max 4 to avoid overwhelming the system)
+	max_workers = min(4, len(dives), os.cpu_count() or 2)
+	print(f"Using {max_workers} worker threads for parallel extraction...")
+
+	with ThreadPoolExecutor(max_workers=max_workers) as executor:
+		# Submit all extraction tasks
+		future_to_dive = {
+			executor.submit(
+				extract_and_save_dive,
+				video_path, i, start_idx, end_idx, confidence,
+				output_dir, diver_zone_norm, video_fps=video_fps
+			): (i+1, start_idx, end_idx, confidence)
+			for i, (start_idx, end_idx, confidence) in enumerate(dives)
+		}
+
+		# Track completion
+		completed = 0
+		total = len(dives)
+
+		# Collect results as they complete
+		for future in as_completed(future_to_dive):
+			dive_num, start_idx, end_idx, confidence = future_to_dive[future]
+			try:
+				future.result()  # This will raise any exception that occurred
+				completed += 1
+				print(f"✅ Completed dive {dive_num}/{total} (frames {start_idx}-{end_idx}, {confidence} confidence) - {completed}/{total} done")
+			except Exception as e:
+				print(f"❌ Error extracting dive {dive_num}: {e}")
+				completed += 1
+
+	extraction_time = time.time() - start_time
+	print(f"\n🎉 Extraction complete in {extraction_time:.1f}s! Dives saved in '{output_dir}'.")
+	print(f"⚡ Parallel processing saved approximately {extraction_time * (len(dives) - 1) / len(dives):.1f}s compared to sequential processing.")
 
 
 if __name__ == "__main__":
