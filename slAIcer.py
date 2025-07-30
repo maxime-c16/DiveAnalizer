@@ -1,33 +1,34 @@
+"""
+DiveAnalyzer - Automated diving video analysis tool
+Detects and extracts individual dives from swimming pool diving videos using computer vision.
+"""
+
 import os
 import sys
+import contextlib
+import cv2
+import numpy as np
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ==================== LOGGING SUPPRESSION ====================
 # Comprehensive log suppression for MediaPipe and TensorFlow
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'     # Suppress all TensorFlow logs
 os.environ['GLOG_minloglevel'] = '3'         # Suppress Google logs (MediaPipe)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'    # Disable oneDNN optimization messages
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'    # Disable GPU to prevent GL context logs
 
-# Create a custom stderr filter to suppress specific MediaPipe/TensorFlow messages
 class FilteredStderr:
+    """Custom stderr filter to suppress specific MediaPipe/TensorFlow messages"""
     def __init__(self, original_stderr):
         self.original_stderr = original_stderr
         self.filtered_phrases = [
-            'GL version:',
-            'INFO: Created TensorFlow',
-            'WARNING: All log messages before absl',
-            'gl_context.cc:',
-            'TensorFlow Lite XNNPACK delegate',
-            'I0000',
-            'W0000',
-            'renderer:',
-            'Intel(R)',
-            'INTEL-',
-            'OpenGL',
-            'Graphics'
+            'GL version:', 'INFO: Created TensorFlow', 'WARNING: All log messages before absl',
+            'gl_context.cc:', 'TensorFlow Lite XNNPACK delegate', 'I0000', 'W0000',
+            'renderer:', 'Intel(R)', 'INTEL-', 'OpenGL', 'Graphics'
         ]
 
     def write(self, text):
-        # Only write if the text doesn't contain filtered phrases
         if not any(phrase in text for phrase in self.filtered_phrases):
             self.original_stderr.write(text)
 
@@ -40,32 +41,17 @@ class FilteredStderr:
 # Install the stderr filter
 sys.stderr = FilteredStderr(sys.stderr)
 
-import cv2
-import numpy as np
-import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# Temporarily suppress all stderr during MediaPipe import to avoid C++ level logging
-import contextlib
-import tempfile
-
+# ==================== MEDIAPIPE INITIALIZATION ====================
 @contextlib.contextmanager
 def suppress_stderr():
     """Context manager to completely suppress stderr at the file descriptor level"""
-    # Save the original stderr file descriptor
     original_stderr_fd = sys.stderr.fileno()
-
-    # Open a null device
     with open(os.devnull, 'w') as devnull:
-        # Duplicate the original stderr file descriptor
         stderr_copy = os.dup(original_stderr_fd)
-
         try:
-            # Redirect stderr to null device at file descriptor level
             os.dup2(devnull.fileno(), original_stderr_fd)
             yield
         finally:
-            # Restore the original stderr
             os.dup2(stderr_copy, original_stderr_fd)
             os.close(stderr_copy)
 
@@ -74,7 +60,7 @@ with suppress_stderr():
     import mediapipe as mp
     mp_pose = mp.solutions.pose
 
-mp_pose = mp.solutions.pose
+# ==================== VIDEO PROCESSING UTILITIES ====================
 
 def frame_generator(video_path, target_fps=None):
 	"""
@@ -97,8 +83,6 @@ def frame_generator(video_path, target_fps=None):
 	interval = int(round(video_fps / target_fps))
 	if interval == 0:
 		interval = 1
-
-	# print(f"Video framerate: {video_fps:.1f}fps, Processing at: {target_fps:.1f}fps (interval: {interval})")
 
 	idx = 0
 	saved_idx = 0
@@ -134,7 +118,7 @@ def auto_detect_board_y(frame):
 	h, w = frame.shape[:2]
 	if lines is not None:
 		for l in lines:
-			x1, y1, x2, y2 = l[0]
+			_, y1, _, y2 = l[0]
 			# Only consider (nearly) horizontal lines away from the bottom
 			if abs(y2 - y1) < 10 and min(y1,y2)>h//6 and max(y1,y2)<int(h*0.97):
 				y_lines.append((y1 + y2) // 2)
@@ -142,6 +126,18 @@ def auto_detect_board_y(frame):
 			# The lowest horizontal except for the bottom of the image
 			return int(sorted(y_lines)[-1])
 	return None
+
+# ==================== SPLASH DETECTION ALGORITHMS ====================
+"""
+Multiple splash detection methods available:
+- frame_diff: Simple frame difference (fast, basic)
+- optical_flow: Motion pattern analysis (medium complexity)
+- contour: Foam/bubble detection (complex, HSV-based)
+- motion_intensity: Gradient-based motion analysis with peak detection (recommended)
+- combined: Voting system using multiple methods (robust but slow)
+
+All methods return (is_splash: bool, confidence_score: float)
+"""
 
 def detect_splash_frame_diff(splash_band, prev_band, thresh=7.0):
 	"""
@@ -311,7 +307,6 @@ def detect_splash_motion_intensity(splash_band, prev_band, motion_thresh=12.0, c
 
 	# Calculate statistics
 	mean_intensity = np.mean(gradient_magnitude)
-	max_intensity = np.max(gradient_magnitude)
 	std_intensity = np.std(gradient_magnitude)
 
 	# High intensity areas (potential splash regions) - more sensitive threshold
@@ -332,20 +327,34 @@ def detect_splash_motion_intensity(splash_band, prev_band, motion_thresh=12.0, c
 	confidence = intensity_score * (1 + high_intensity_ratio)
 
 	return is_splash, confidence
-def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.9,
+
+# ==================== DIVE DETECTION ENGINE ====================
+def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 				   splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 				   diver_zone_norm=None, start_search_at_idx=0, debug=False, splash_method='combined',
 				   video_fps=30):
-
-
 	"""
-	New dive detection logic:
-	1. Start: When diver is detected inside the diver detection zone
-	2. End: When splash detected (after min frames) AND diver no longer in zone
-	3. Fallback: Auto-split after timeout if no splash but diver disappeared
+	Core dive detection algorithm using state machine approach.
 
-	splash_method options: 'frame_diff', 'optical_flow', 'contour', 'motion_intensity', 'combined'
-	Returns (start_idx, end_idx, confidence) where confidence is 'high' or 'low'
+	State transitions: WAITING → DIVER_ON_PLATFORM → DIVING → END
+	1. Start: When diver detected in detection zone
+	2. End: When splash detected AND diver no longer in zone
+	3. Fallback: Auto-timeout if no splash but diver disappeared
+
+	Args:
+		frame_gen: Video frame generator
+		board_y_norm: Normalized diving board Y position (0-1)
+		water_y_norm: Normalized water surface Y position (0-1)
+		splash_zone_top_norm: Top of splash detection zone (0-1)
+		splash_zone_bottom_norm: Bottom of splash detection zone (0-1)
+		diver_zone_norm: (left, top, right, bottom) diver detection zone (0-1)
+		start_search_at_idx: Frame index to start search from
+		debug: Enable visual debug window
+		splash_method: Detection algorithm to use
+		video_fps: Video framerate for timing calculations
+
+	Returns:
+		(start_idx, end_idx, confidence) where confidence is 'high' or 'low'
 	"""
 
 	# Suppress stderr during pose initialization to avoid repeated MediaPipe logs
@@ -381,7 +390,6 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 
 	# Peak-based splash event detection for motion_intensity
 	splash_event_state = 'waiting'  # 'waiting', 'in_splash', 'post_splash'
-	splash_start_idx = None
 	peak_score = 0
 	frames_since_peak = 0
 	cooldown_frames = 5  # Minimum frames between splash events
@@ -411,7 +419,6 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 		splash_band = gray[band_top:band_bot, :]
 		splash_score = 0
 		splash_this_frame = False
-		splash_details = {}
 
 		if prev_gray is not None:
 			prev_band = prev_gray[band_top:band_bot, :]
@@ -433,7 +440,6 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 					if splash_score > splash_thresh:
 						# Start of new splash event
 						splash_event_state = 'in_splash'
-						splash_start_idx = idx
 						peak_score = splash_score
 						if debug:
 							print(f"    Motion Intensity: Splash event started at frame {idx}, score: {splash_score:.1f}")
@@ -459,10 +465,10 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 					if frames_since_peak >= cooldown_frames:
 						splash_event_state = 'waiting'
 						if debug:
-							print(f"    Motion Intensity: Ready for next splash detection after cooldown")
+							print("    Motion Intensity: Ready for next splash detection after cooldown")
 
 			elif splash_method == 'combined':
-				splash_this_frame, splash_score, splash_details = detect_splash_combined(splash_band, prev_band, splash_thresh)
+				splash_this_frame, splash_score, _ = detect_splash_combined(splash_band, prev_band, splash_thresh)
 
 			if splash_this_frame:
 				splash_detected_idx = idx
@@ -648,7 +654,7 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95, takeoff_thresh=0.
 
 	return start_idx, end_idx, confidence
 
-def detect_all_dives(video_path, board_y_norm, water_y_norm, takeoff_thresh,
+def detect_all_dives(video_path, board_y_norm, water_y_norm,
 					 splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 					 diver_zone_norm=None, debug=False, splash_method='motion_intensity'):
 	"""
@@ -678,7 +684,7 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm, takeoff_thresh,
 
 		print(f"Searching for a dive from frame {start_search_at_idx}...")
 		start_idx, end_idx, confidence = find_next_dive(
-			frame_gen, board_y_norm, water_y_norm, takeoff_thresh,
+			frame_gen, board_y_norm, water_y_norm,
 			splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
 			start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
 			video_fps=video_fps
@@ -820,7 +826,7 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	out.release()
 	print(f"Successfully saved {output_path}")
 
-
+# ==================== USER INTERFACE FUNCTIONS ====================
 def get_board_y_px(frame):
 	"""
 	Show the frame and let the user click to select the board y coordinate.
@@ -845,7 +851,7 @@ def get_board_y_px(frame):
 
 	clone = display_frame.copy()
 
-	def on_mouse(event, x, y, flags, param):
+	def on_mouse(event, x, y, _flags, _param):
 		# Scale mouse coordinates back to original frame
 		actual_y = int(y / display_scale) if display_scale < 1.0 else y
 		if mouse_y['y'] != actual_y:
@@ -913,7 +919,7 @@ def get_splash_zone(frame):
 
 	clone = display_frame.copy()
 
-	def on_mouse(event, x, y, flags, param):
+	def on_mouse(event, x, y, _flags, _param):
 		# Scale coordinates back to original frame
 		actual_y = int(y / display_scale) if display_scale < 1.0 else y
 
@@ -1008,7 +1014,7 @@ def get_diver_detection_zone(frame):
 
 	clone = display_frame.copy()
 
-	def on_mouse(event, x, y, flags, param):
+	def on_mouse(event, x, y, _flags, _param):
 		# Scale coordinates back to original frame
 		actual_x = int(x / display_scale) if display_scale < 1.0 else x
 		actual_y = int(y / display_scale) if display_scale < 1.0 else y
@@ -1094,72 +1100,7 @@ def get_diver_detection_zone(frame):
 	cv2.destroyAllWindows()
 	return clicked['coords']
 
-def calibrate_takeoff_thresh(video_path, board_y_norm, initial_thresh=0.1, water_y_norm=0.95, max_frames=100):
-	"""
-	Interactive tool to calibrate takeoff_thresh.
-	Use UP/DOWN arrows to adjust threshold, 'q' to finish.
-	"""
-	# Suppress stderr during pose initialization to avoid repeated MediaPipe logs
-	with suppress_stderr():
-		pose = mp_pose.Pose(static_image_mode=True)
-	thresh = initial_thresh
-	frame_gen = frame_generator(video_path)
-
-	# Store a limited number of frames for calibration
-	calib_frames = []
-	for i, (_, frame) in enumerate(frame_gen):
-		if i >= max_frames:
-			break
-		calib_frames.append(frame)
-
-	if not calib_frames:
-		print("Warning: No frames to calibrate with.")
-		return initial_thresh
-
-	idx = 0
-	while 0 <= idx < len(calib_frames):
-		frame = calib_frames[idx]
-		h, w = frame.shape[:2]
-		board_y_px = int(board_y_norm * h)
-		water_y_px = int(water_y_norm * h)
-		rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-		res = pose.process(rgb)
-		ankle_l, ankle_r = None, None
-		if res.pose_landmarks:
-			lm = res.pose_landmarks.landmark
-			ankle_l = lm[mp_pose.PoseLandmark.LEFT_ANKLE].y
-			ankle_r = lm[mp_pose.PoseLandmark.RIGHT_ANKLE].y
-		# Overlay
-		disp = frame.copy()
-		cv2.line(disp, (0, board_y_px), (w, board_y_px), (0,255,255), 2)
-		cv2.line(disp, (0, water_y_px), (w, water_y_px), (255,128,0), 2)
-		cv2.putText(disp, f"takeoff_thresh: {thresh:.3f} (UP/DOWN to adjust, q to quit)", (10, 30),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-		if ankle_l is not None and ankle_r is not None:
-			ankle_l_px = int(ankle_l * h)
-			ankle_r_px = int(ankle_r * h)
-			cv2.circle(disp, (w//2-40, ankle_l_px), 8, (0,255,0), -1)
-			cv2.circle(disp, (w//2+40, ankle_r_px), 8, (0,255,0), -1)
-			# Show if takeoff would be detected
-			if ankle_l < board_y_norm - thresh or ankle_r < board_y_norm - thresh:
-				cv2.putText(disp, "TAKEOFF DETECTED", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 3)
-		cv2.imshow("Calibrate Takeoff Threshold", disp)
-		key = cv2.waitKey(0)
-		if key == ord('q'):
-			break
-		elif key == 82:  # UP arrow
-			thresh += 0.01
-		elif key == 84:  # DOWN arrow
-			thresh = max(0.01, thresh - 0.01)
-		elif key == 83:  # RIGHT arrow
-			idx = min(idx+1, len(calib_frames)-1)
-		elif key == 81:  # LEFT arrow
-			idx = max(idx-1, 0)
-		else:
-			idx += 1
-	cv2.destroyWindow("Calibrate Takeoff Threshold")
-	return thresh
-
+# ==================== MAIN APPLICATION ====================
 def main():
 	# Set up argument parser
 	parser = argparse.ArgumentParser(description="Analyze a diving video to extract individual dives.")
@@ -1180,7 +1121,7 @@ def main():
 	# Create output directory if it doesn't exist
 	os.makedirs(output_dir, exist_ok=True)
 
-		# Step 1: Get the first frame for user calibration
+	# Step 1: Get the first frame for user calibration
 	print(f"Opening video file: {video_path}...")
 
 	# Get video framerate first
@@ -1245,7 +1186,7 @@ def main():
 		print("⚡ Fast mode - no debug window (use --debug for visual analysis)")
 		print("Legend: WAITING -> DIVER_ON_PLATFORM -> DIVING -> END")
 	dives = detect_all_dives(
-		video_path, board_y_norm, water_y_norm, takeoff_thresh=0.1,
+		video_path, board_y_norm, water_y_norm,
 		splash_zone_top_norm=splash_zone_top_norm,
 		splash_zone_bottom_norm=splash_zone_bottom_norm,
 		diver_zone_norm=diver_zone_norm,
