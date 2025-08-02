@@ -18,6 +18,17 @@ import json
 import pickle
 from datetime import datetime
 
+# Debug and visualization imports
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.animation import FuncAnimation
+    from collections import deque
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("⚠️  Matplotlib not available - debug plotting will be limited")
+
 # ==================== PERFORMANCE CACHE SYSTEM ====================
 class PerformanceCache:
     """Manages performance statistics cache for dynamic progress estimation."""
@@ -63,7 +74,12 @@ class PerformanceCache:
         # Update extraction performance
         extraction_times = metrics.get('extraction_times', [])
         if extraction_times:
-            total_extraction_time = sum(e['extraction_time'] for e in extraction_times)
+            # Handle both formats: list of floats or list of dicts
+            if isinstance(extraction_times[0], dict):
+                total_extraction_time = sum(e['extraction_time'] for e in extraction_times)
+            else:
+                total_extraction_time = sum(extraction_times)
+
             total_frames = sum(d['duration_frames'] for d in metrics.get('dive_durations', []))
             if total_frames > 0:
                 extraction_time_per_frame = total_extraction_time / total_frames
@@ -753,92 +769,66 @@ def detect_splash_frame_diff(splash_band, prev_band, thresh=7.0):
 	splash_score = np.mean(diff)
 	return splash_score > thresh, splash_score
 
-def detect_splash_optical_flow(splash_band, prev_band, flow_thresh=2.0, magnitude_thresh=10.0):
-	"""
-	Optical flow based splash detection
-	Detects radial outward motion patterns characteristic of splashes
-	"""
-	if prev_band is None:
-		return False, 0.0
+def detect_splash_frame_diff(band, prev_band, diff_thresh=25, area_thresh=500):
+    """
+    Frame-difference + contour-based splash detection.
+    - diff_thresh: pixel-intensity difference threshold.
+    - area_thresh: minimum contour area to qualify as splash.
+    Returns (is_splash: bool, score: float)
+    """
+    # Absolute difference
+    diff = cv2.absdiff(band, prev_band)
+    # Binary mask
+    _, mask = cv2.threshold(diff, diff_thresh, 255, cv2.THRESH_BINARY)
+    # Morphological closing to fill small holes
+    kernel = np.ones((5, 5), np.uint8)
+    mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # Find contours
+    contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Measure largest contour area
+    max_area = max((cv2.contourArea(cnt) for cnt in contours), default=0)
+    is_splash = max_area > area_thresh
+    score = max_area
+    return is_splash, score
 
-	# Calculate dense optical flow using Farneback method
-	flow = cv2.calcOpticalFlowFarneback(
-		prev_band, splash_band, None,
-		pyr_scale=0.5, levels=3, winsize=15, iterations=3,
-		poly_n=5, poly_sigma=1.2, flags=0
-	)
+def detect_splash_optical_flow(band, prev_band, flow_thresh=1.0, ratio_thresh=0.02):
+    """
+    Dense optical-flow-based splash detection.
+    - flow_thresh: magnitude threshold for significant motion.
+    - ratio_thresh: fraction of pixels exceeding flow_thresh to count as splash.
+    Returns (is_splash: bool, score: float)
+    """
+    # Compute dense optical flow (Farneback)
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_band, band, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+    )
+    mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    # Compute ratio of pixels with significant motion
+    motion_mask = mag > flow_thresh
+    motion_ratio = float(np.sum(motion_mask)) / mag.size
+    is_splash = motion_ratio > ratio_thresh
+    score = motion_ratio
+    return is_splash, score
 
-	if flow is None:
-		return False, 0.0
-
-	# Calculate flow magnitude and check for motion patterns
-	flow_magnitude = np.sqrt(flow[:, :, 0]**2 + flow[:, :, 1]**2)
-	mean_magnitude = np.mean(flow_magnitude)
-
-	# Look for high magnitude flows (indicating rapid movement)
-	high_flow_pixels = np.sum(flow_magnitude > magnitude_thresh)
-	flow_density = high_flow_pixels / (splash_band.shape[0] * splash_band.shape[1])
-
-	# Splash detected if significant motion with sufficient density
-	is_splash = mean_magnitude > flow_thresh and flow_density > 0.1
-	confidence = mean_magnitude * flow_density
-
-	return is_splash, confidence
-
-def detect_splash_contour_analysis(splash_band, prev_band, area_thresh=500, contour_thresh=3):
-	"""
-	Contour and foam analysis based splash detection
-	Detects white foam and irregular shapes characteristic of water splashes
-	"""
-	if prev_band is None:
-		return False, 0.0
-
-	# Ensure splash_band is grayscale
-	if len(splash_band.shape) == 3:
-		splash_band = cv2.cvtColor(splash_band, cv2.COLOR_BGR2GRAY)
-
-	# Convert to HSV for better water/foam separation
-	splash_bgr = cv2.cvtColor(splash_band, cv2.COLOR_GRAY2BGR)
-	splash_hsv = cv2.cvtColor(splash_bgr, cv2.COLOR_BGR2HSV)
-
-	# Detect white/bright areas (foam)
-	# High Value (brightness) and low Saturation typically indicate foam
-	lower_foam = np.array([0, 0, 180])  # Low saturation, high brightness
-	upper_foam = np.array([180, 60, 255])
-	foam_mask = cv2.inRange(splash_hsv, lower_foam, upper_foam)
-
-	# Morphological operations to clean up noise
-	kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-	foam_mask = cv2.morphologyEx(foam_mask, cv2.MORPH_CLOSE, kernel)
-	foam_mask = cv2.morphologyEx(foam_mask, cv2.MORPH_OPEN, kernel)
-
-	# Find contours
-	contours, _ = cv2.findContours(foam_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-	if not contours:
-		return False, 0.0
-
-	# Analyze contours for splash characteristics
-	total_foam_area = 0
-	significant_contours = 0
-
-	for contour in contours:
-		area = cv2.contourArea(contour)
-		if area > area_thresh:
-			# Check if contour is irregular (characteristic of splash)
-			perimeter = cv2.arcLength(contour, True)
-			if perimeter > 0:
-				circularity = 4 * np.pi * area / (perimeter * perimeter)
-				# Splashes are typically irregular (low circularity)
-				if circularity < 0.7:
-					total_foam_area += area
-					significant_contours += 1
-
-	# Splash detected if enough foam area and irregular contours
-	is_splash = significant_contours >= contour_thresh and total_foam_area > area_thresh * 2
-	confidence = total_foam_area / (splash_band.shape[0] * splash_band.shape[1])
-
-	return is_splash, confidence
+def detect_splash_contours(band, prev_band, canny_thresh1=50, canny_thresh2=150, area_thresh=500):
+    """
+    Edge/contour-based splash detection using Canny edges on frame difference.
+    - canny_thresh1,2: thresholds for Canny edge detector.
+    - area_thresh: total contour area indicating a splash.
+    Returns (is_splash: bool, score: float)
+    """
+    # Difference and edge detection
+    diff = cv2.absdiff(band, prev_band)
+    edges = cv2.Canny(diff, canny_thresh1, canny_thresh2)
+    # Find contours on edges
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Sum of contour areas
+    total_area = sum(cv2.contourArea(cnt) for cnt in contours)
+    is_splash = total_area > area_thresh
+    score = total_area
+    return is_splash, score
 
 def detect_splash_combined(splash_band, prev_band, splash_thresh=7.0):
 	"""
@@ -875,7 +865,7 @@ def detect_splash_combined(splash_band, prev_band, splash_thresh=7.0):
 	except Exception:
 		pass
 
-	contour_splash, contour_score = detect_splash_contour_analysis(splash_band, prev_band)
+	contour_splash, contour_score = detect_splash_contours(splash_band, prev_band)
 
 	# Voting system: at least 2 out of 3 methods must agree
 	votes = sum([diff_splash, flow_splash, contour_splash])
@@ -1140,6 +1130,171 @@ def find_next_dive_threaded(frame_gen, board_y_norm, water_y_norm=0.95,
 
 	return start_idx, end_idx, confidence
 
+# ==================== DEBUG VISUALIZATION FUNCTIONS ====================
+
+def update_debug_plots(debug_data, axes, current_state, current_idx, start_idx, end_idx):
+	"""Update real-time debug plots with current detection data."""
+	if not MATPLOTLIB_AVAILABLE or axes is None:
+		return
+
+	try:
+		# Clear all axes
+		for ax in axes.flat:
+			ax.clear()
+
+		frames = debug_data['frame_indices']
+		timestamps = debug_data['timestamps']
+
+		if len(frames) < 2:
+			return
+
+		# Plot 1: Diver Detection Over Time
+		axes[0, 0].plot(timestamps, debug_data['diver_detected'], 'b-', linewidth=2, label='Diver Detected')
+		axes[0, 0].fill_between(timestamps, debug_data['diver_detected'], alpha=0.3)
+		axes[0, 0].set_ylabel('Diver Present')
+		axes[0, 0].set_title('Diver Detection Timeline')
+		axes[0, 0].set_ylim(-0.1, 1.1)
+		axes[0, 0].grid(True, alpha=0.3)
+
+		# Plot 2: Splash Scores
+		axes[0, 1].plot(timestamps, debug_data['splash_scores'], 'r-', linewidth=1, label='Splash Score')
+		axes[0, 1].set_ylabel('Splash Intensity')
+		axes[0, 1].set_title('Splash Detection Scores')
+		axes[0, 1].grid(True, alpha=0.3)
+
+		# Plot 3: State Machine
+		state_colors = ['gray', 'orange', 'red']
+		state_names = ['WAITING', 'ON_PLATFORM', 'DIVING']
+		axes[1, 0].plot(timestamps, debug_data['state_values'], 'g-', linewidth=2)
+		axes[1, 0].scatter(timestamps, debug_data['state_values'],
+						  c=[state_colors[min(s, 2)] for s in debug_data['state_values']], s=10)
+		axes[1, 0].set_ylabel('State')
+		axes[1, 0].set_title('Detection State Machine')
+		axes[1, 0].set_yticks([0, 1, 2])
+		axes[1, 0].set_yticklabels(state_names)
+		axes[1, 0].grid(True, alpha=0.3)
+
+		# Plot 4: Confidence and Timeline
+		axes[1, 1].plot(timestamps, debug_data['confidence_scores'], 'm-', linewidth=1, label='Confidence')
+		axes[1, 1].set_ylabel('Confidence')
+		axes[1, 1].set_xlabel('Time (seconds)')
+		axes[1, 1].set_title('Detection Confidence')
+		axes[1, 1].grid(True, alpha=0.3)
+
+		# Mark dive boundaries
+		if start_idx is not None:
+			start_time = start_idx / 30.0  # Assuming 30fps, should use actual fps
+			for ax in axes.flat:
+				ax.axvline(start_time, color='green', linestyle='--', alpha=0.7, label='Dive Start')
+
+		if end_idx is not None:
+			end_time = end_idx / 30.0
+			for ax in axes.flat:
+				ax.axvline(end_time, color='red', linestyle='--', alpha=0.7, label='Dive End')
+
+		# Current frame marker
+		current_time = current_idx / 30.0
+		for ax in axes.flat:
+			ax.axvline(current_time, color='blue', linestyle='-', alpha=0.5, label='Current')
+
+		plt.tight_layout()
+		plt.pause(0.01)  # Small pause to update display
+
+	except Exception as e:
+		print(f"Debug plot update failed: {e}")
+
+def generate_final_debug_report(debug_data, start_idx, end_idx, video_fps):
+	"""Generate comprehensive debug analysis report and save plots."""
+	if not MATPLOTLIB_AVAILABLE:
+		print("⚠️  Matplotlib not available - skipping debug report generation")
+		return
+
+	print("\n" + "="*60)
+	print("🔍 DEBUG ANALYSIS REPORT")
+	print("="*60)
+
+	frames = debug_data['frame_indices']
+	timestamps = debug_data['timestamps']
+
+	if len(frames) == 0:
+		print("No debug data collected")
+		return
+
+	# Analysis statistics
+	total_frames = len(frames)
+	diver_detections = sum(debug_data['diver_detected'])
+	avg_splash_score = np.mean(debug_data['splash_scores'])
+	max_splash_score = np.max(debug_data['splash_scores'])
+
+	print(f"📊 Analysis Statistics:")
+	print(f"    Total frames analyzed: {total_frames}")
+	print(f"    Diver detections: {diver_detections} ({diver_detections/total_frames*100:.1f}%)")
+	print(f"    Average splash score: {avg_splash_score:.2f}")
+	print(f"    Maximum splash score: {max_splash_score:.2f}")
+
+	# Anomaly detection based on debug analysis findings
+	anomalies = []
+	diver_rate = diver_detections/total_frames*100
+
+	if diver_rate > 50:
+		anomalies.append(f"⚠️  ANOMALY: High diver detection rate ({diver_rate:.1f}%) - possible false positive")
+	if max_splash_score < 20 and start_idx is not None and end_idx is not None:
+		anomalies.append(f"⚠️  ANOMALY: Low splash peak ({max_splash_score:.1f}) - dive may be timeout-based")
+	if start_idx is not None and end_idx is not None:
+		dive_duration = (end_idx - start_idx) / video_fps
+		if dive_duration > 15:
+			anomalies.append(f"⚠️  ANOMALY: Very long dive duration ({dive_duration:.1f}s) - possible stuck in DIVING state")
+		if dive_duration < 1:
+			anomalies.append(f"⚠️  ANOMALY: Very short dive duration ({dive_duration:.1f}s) - may be noise")
+
+	if anomalies:
+		print(f"\n🚨 ANOMALIES DETECTED:")
+		for anomaly in anomalies:
+			print(f"    {anomaly}")
+	else:
+		print(f"\n✅ No anomalies detected - dive appears valid")
+
+	if start_idx is not None and end_idx is not None:
+		dive_duration = (end_idx - start_idx) / video_fps
+		print(f"    Dive detected: {start_idx}-{end_idx} ({dive_duration:.1f}s)")
+
+	# Create comprehensive analysis plot
+	try:
+		fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+		fig.suptitle('Dive Detection Debug Analysis Report', fontsize=16)
+
+		# Plot all data
+		update_debug_plots(debug_data, axes[:2, :], None, frames[-1], start_idx, end_idx)
+
+		# Additional analysis plots
+		# Splash score histogram
+		axes[2, 0].hist(debug_data['splash_scores'], bins=30, alpha=0.7, color='red')
+		axes[2, 0].set_xlabel('Splash Score')
+		axes[2, 0].set_ylabel('Frequency')
+		axes[2, 0].set_title('Splash Score Distribution')
+		axes[2, 0].grid(True, alpha=0.3)
+
+		# State distribution
+		state_counts = [debug_data['state_values'].count(i) for i in range(3)]
+		state_names = ['WAITING', 'ON_PLATFORM', 'DIVING']
+		axes[2, 1].pie(state_counts, labels=state_names, autopct='%1.1f%%')
+		axes[2, 1].set_title('Time Spent in Each State')
+
+		plt.tight_layout()
+
+		# Save the debug report
+		debug_filename = f"debug_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+		plt.savefig(debug_filename, dpi=150, bbox_inches='tight')
+		print(f"📁 Debug analysis saved as: {debug_filename}")
+
+		# Show plot
+		plt.show()
+
+	except Exception as e:
+		print(f"Failed to generate debug plots: {e}")
+
+	print("="*60)
+
 def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 				   splash_zone_top_norm=None, splash_zone_bottom_norm=None,
 				   diver_zone_norm=None, start_search_at_idx=0, debug=False, splash_method='combined',
@@ -1148,6 +1303,27 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	Core dive detection algorithm using state machine approach.
 	Conservative optimization: Reduce pose detection only when safe (during confirmed diving state).
 	"""
+
+	# Initialize debug analytics if requested
+	debug_data = None
+	debug_fig = None
+	debug_axes = None
+	state_data = {}  # Track state for each frame for video annotation
+	if debug and MATPLOTLIB_AVAILABLE:
+		debug_data = {
+			'frame_indices': [],
+			'diver_detected': [],
+			'splash_scores': [],
+			'state_values': [],
+			'confidence_scores': [],
+			'pose_landmarks': [],
+			'timestamps': []
+		}
+		# Create debug visualization window
+		plt.ion()  # Interactive mode
+		debug_fig, debug_axes = plt.subplots(2, 2, figsize=(15, 10))
+		debug_fig.suptitle('Real-time Dive Detection Analytics', fontsize=16)
+		plt.tight_layout()
 
 	# Threading optimization - reuse pose detector + optional selective detection
 	if use_threading:
@@ -1160,15 +1336,38 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	else:
 		pose = None
 
-	# Dive states
+	# Dive states - Physics-aware state machine
 	WAITING = 0
-	DIVER_ON_PLATFORM = 1
-	DIVING = 2
+	DIVER_PREPARATION = 1  # Diver detected on platform, preparing
+	DIVE_EXECUTION = 2     # Diver in motion (falling/jumping)
+	WATER_ENTRY = 3        # Splash phase
+	DIVE_COMPLETE = 4      # Post-splash, dive confirmed
 
 	state = WAITING
 	start_idx = None
 	end_idx = None
 	confidence = 'high'
+
+	# Enhanced tracking for robust detection
+	dive_start_candidate = None
+	water_entry_candidate = None
+	splash_peak_score = 0
+	preparation_frames = 0
+	execution_frames = 0
+
+	# Anti-infinite-loop protection
+	last_failed_attempt_frame = -1
+	cooldown_after_failure = int(2.0 * video_fps)  # 2 second cooldown after failed attempts
+
+	# Robust validation thresholds - RELAXED TIMING
+	min_preparation_time = int(0.5 * video_fps)      # 0.5 seconds minimum preparation
+	max_preparation_time = int(15.0 * video_fps)     # 15 seconds maximum preparation (was too strict at 8s)
+	min_execution_time = int(0.3 * video_fps)        # 0.3 seconds minimum dive execution
+	max_execution_time = int(8.0 * video_fps)        # 8 seconds maximum dive execution
+	required_splash_intensity = 10.0                 # Reduced splash requirement (was too high at 20.0)
+	fallback_splash_intensity = 5.0                  # Even more permissive fallback
+
+	print(f"🎯 Physics-aware detection: prep={min_preparation_time}-{max_preparation_time}f, exec={min_execution_time}-{max_execution_time}f, splash>{required_splash_intensity}")
 
 	# Dynamic timing constraints based on video framerate
 	min_dive_frames = int(1.0 * video_fps)
@@ -1199,6 +1398,10 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	consecutive_diver_frames = 0
 	consecutive_no_diver_frames = 0
 	diver_detection_threshold = 3
+
+	# Enhanced filtering for false positive reduction
+	sustained_diver_detection_required = int(2.0 * video_fps)  # Require 2 seconds of sustained detection
+	max_allowed_diver_detection_rate = 0.8  # Max 80% detection rate in any window
 
 	for idx, frame in frame_gen:
 		h, w = frame.shape[:2]
@@ -1265,7 +1468,7 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 		total_pose_opportunities += 1
 
 		# Only apply optimization if enabled and we're in a safe state to skip
-		if enable_pose_optimization and state == DIVING and frames_without_diver > diver_detection_threshold * 2:
+		if enable_pose_optimization and state in [DIVE_EXECUTION, WATER_ENTRY] and consecutive_no_diver_frames > diver_detection_threshold * 2:
 			# Diver has been gone for a while during diving - safe to skip occasionally
 			frames_since_last_detection = idx - last_pose_detection_frame
 			if frames_since_last_detection < pose_cooldown_frames:
@@ -1331,38 +1534,201 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 			consecutive_diver_frames = 0
 			consecutive_no_diver_frames += 1
 
-		# --- State Machine Logic ---
+		# --- Debug Data Collection ---
+		if debug and debug_data is not None:
+			debug_data['frame_indices'].append(idx)
+			debug_data['diver_detected'].append(1 if diver_in_zone else 0)
+			debug_data['splash_scores'].append(splash_score if 'splash_score' in locals() else 0)
+			debug_data['state_values'].append(state)
+			debug_data['confidence_scores'].append(consecutive_diver_frames / max(1, diver_detection_threshold))
+			debug_data['timestamps'].append(idx / video_fps)
+
+			# Update real-time plots every 10 frames for performance
+			if len(debug_data['frame_indices']) % 10 == 0:
+				update_debug_plots(debug_data, debug_axes, state, idx, start_idx, end_idx)
+
+		# --- OpenCV Debug Window ---
+		if debug:
+			debug_frame = frame.copy()
+
+			# Draw detection zones
+			if diver_zone_norm is not None:
+				left_norm, top_norm, right_norm, bottom_norm = diver_zone_norm
+				left = int(left_norm * w)
+				top = int(top_norm * h)
+				right = int(right_norm * w)
+				bottom = int(bottom_norm * h)
+				color = (0, 255, 0) if diver_in_zone else (0, 0, 255)
+				cv2.rectangle(debug_frame, (left, top), (right, bottom), color, 2)
+				cv2.putText(debug_frame, f"Diver Zone {'✓' if diver_in_zone else '✗'}",
+						   (left, top-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+			# Draw splash zone
+			if splash_zone_top_norm is not None:
+				splash_top = int(splash_zone_top_norm * h)
+				splash_bottom = int(splash_zone_bottom_norm * h)
+				splash_color = (255, 255, 0) if splash_this_frame else (100, 100, 100)
+				cv2.rectangle(debug_frame, (0, splash_top), (w, splash_bottom), splash_color, 2)
+				cv2.putText(debug_frame, f"Splash Zone (Score: {splash_score:.1f})" if 'splash_score' in locals() else "Splash Zone",
+						   (10, splash_top-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, splash_color, 2)
+
+			# Draw board line
+			board_y_px = int(board_y_norm * h)
+			cv2.line(debug_frame, (0, board_y_px), (w, board_y_px), (255, 0, 255), 3)
+			cv2.putText(debug_frame, "Board Line", (10, board_y_px-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+
+			# State and timing info
+			state_names = ['WAITING', 'DIVER_ON_PLATFORM', 'DIVING']
+			state_name = state_names[state] if state < len(state_names) else 'UNKNOWN'
+			cv2.putText(debug_frame, f"State: {state_name}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+			cv2.putText(debug_frame, f"Frame: {idx} ({idx/video_fps:.1f}s)", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+			cv2.putText(debug_frame, f"Consecutive Diver: {consecutive_diver_frames}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+			cv2.putText(debug_frame, f"No Diver: {consecutive_no_diver_frames}", (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+			if start_idx is not None:
+				cv2.putText(debug_frame, f"Dive Start: {start_idx} ({start_idx/video_fps:.1f}s)", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+			# Show debug window
+			cv2.imshow("Dive Detection Debug", debug_frame)
+			if cv2.waitKey(1) & 0xFF == ord('q'):
+				print("Debug stopped by user")
+				break
+
+		# --- PHYSICS-AWARE STATE MACHINE LOGIC ---
 		if state == WAITING:
-			if consecutive_diver_frames >= diver_detection_threshold:
-				state = DIVER_ON_PLATFORM
-				start_idx = idx - consecutive_diver_frames + 1
-				frames_since_start = consecutive_diver_frames - 1
+			# Look for diver appearing on platform (with cooldown protection)
+			if diver_in_zone and consecutive_diver_frames >= diver_detection_threshold:
+				# Check if we're in cooldown period after a failed attempt
+				if idx - last_failed_attempt_frame > cooldown_after_failure:
+					state = DIVER_PREPARATION
+					dive_start_candidate = idx - consecutive_diver_frames + 1
+					preparation_frames = consecutive_diver_frames
+					print(f"  🏊 PREPARATION phase started at frame {dive_start_candidate}")
+				else:
+					# Still in cooldown period - reset counters and wait
+					consecutive_diver_frames = 0
 
-		elif state == DIVER_ON_PLATFORM:
-			frames_since_start += 1
-			if consecutive_no_diver_frames >= diver_detection_threshold:
-				state = DIVING
-				frames_without_diver = consecutive_no_diver_frames
+		elif state == DIVER_PREPARATION:
+			preparation_frames += 1
 
-		elif state == DIVING:
-			frames_since_start += 1
-			if not diver_in_zone:
-				frames_without_diver += 1
-			else:
-				frames_without_diver = 0
+			# Validate preparation phase
+			if not diver_in_zone and consecutive_no_diver_frames >= diver_detection_threshold:
+				# Diver left platform - check if it's a valid dive execution
+				if min_preparation_time <= preparation_frames <= max_preparation_time:
+					state = DIVE_EXECUTION
+					execution_frames = 0
+					start_idx = dive_start_candidate  # Confirmed dive start
+					print(f"  🎯 EXECUTION phase: diver left platform after {preparation_frames} frames preparation")
+				else:
+					# Invalid preparation time - reset ALL variables
+					print(f"  ❌ Invalid preparation time ({preparation_frames} frames), resetting")
+					state = WAITING
+					dive_start_candidate = None
+					preparation_frames = 0
+					consecutive_diver_frames = 0  # CRITICAL: Reset to prevent immediate re-trigger
+					consecutive_no_diver_frames = 0
+					last_failed_attempt_frame = idx  # Set cooldown period
+			elif preparation_frames > max_preparation_time:
+				# Too long on platform - probably not diving - reset ALL variables
+				print(f"  ⏱️  Preparation timeout ({preparation_frames} frames), resetting")
+				state = WAITING
+				dive_start_candidate = None
+				preparation_frames = 0
+				consecutive_diver_frames = 0  # CRITICAL: Reset to prevent immediate re-trigger
+				consecutive_no_diver_frames = 0
+				last_failed_attempt_frame = idx  # Set cooldown period
 
-			dive_long_enough = frames_since_start >= min_dive_frames
+		elif state == DIVE_EXECUTION:
+			execution_frames += 1
 
-			if dive_long_enough:
-				if splash_this_frame or (splash_detected_idx is not None and abs(idx - splash_detected_idx) <= 3):
-					if frames_without_diver >= diver_detection_threshold:
-						end_idx = idx
-						confidence = 'high'
-						break
-				elif frames_without_diver >= max_no_splash_frames:
+			# Monitor for water entry (splash) - MORE PERMISSIVE
+			if splash_this_frame:
+				splash_peak_score = max(splash_peak_score, splash_score)
+				if splash_score > fallback_splash_intensity:  # Use more permissive threshold
+					state = WATER_ENTRY
+					water_entry_candidate = idx
+					print(f"  💦 WATER_ENTRY detected: splash score {splash_score:.1f} at frame {idx}")
+
+			# Validate execution phase - MORE PERMISSIVE
+			if execution_frames > max_execution_time:
+				if splash_peak_score > fallback_splash_intensity:  # Very permissive fallback
+					# Long execution but had some splash - accept as low confidence
+					state = DIVE_COMPLETE
 					end_idx = idx
 					confidence = 'low'
-					break
+					print(f"  ⚠️  Long execution ({execution_frames} frames) but weak splash detected ({splash_peak_score:.1f})")
+					break  # CRITICAL: Exit loop after completing dive
+				elif execution_frames >= min_execution_time and not diver_in_zone:
+					# Permissive: If diver has been gone long enough, accept as very low confidence
+					state = DIVE_COMPLETE
+					end_idx = idx
+					confidence = 'low'
+					print(f"  ⚠️  Permissive mode: accepting dive based on diver absence ({execution_frames} frames)")
+					break  # CRITICAL: Exit loop after completing dive
+				else:
+					# Long execution, no splash - false positive - reset ALL variables
+					print(f"  ❌ Execution timeout with no splash, resetting")
+					state = WAITING
+					start_idx = None
+					dive_start_candidate = None
+					preparation_frames = 0
+					execution_frames = 0
+					splash_peak_score = 0
+					consecutive_diver_frames = 0  # CRITICAL: Reset to prevent issues
+					consecutive_no_diver_frames = 0
+					last_failed_attempt_frame = idx  # Set cooldown period
+
+		elif state == WATER_ENTRY:
+			execution_frames += 1
+
+			# Continue monitoring splash for peak detection
+			if splash_this_frame:
+				splash_peak_score = max(splash_peak_score, splash_score)
+
+			# Wait for splash to settle (diver disappears in water)
+			if not diver_in_zone and consecutive_no_diver_frames >= diver_detection_threshold:
+				state = DIVE_COMPLETE
+				end_idx = idx
+				confidence = 'high'
+				print(f"  ✅ DIVE_COMPLETE: peak splash {splash_peak_score:.1f}, total execution {execution_frames} frames")
+				break
+			elif execution_frames > max_execution_time:
+				# Splash detected but taking too long to complete
+				state = DIVE_COMPLETE
+				end_idx = idx
+				confidence = 'medium'
+				print(f"  ⚠️  Dive completed by timeout after splash, confidence: medium")
+				break
+
+		# State progression logging for debugging
+		if debug and idx % 300 == 0:  # Every 10 seconds at 30fps
+			state_names = {WAITING: "WAITING", DIVER_PREPARATION: "PREPARATION",
+						  DIVE_EXECUTION: "EXECUTION", WATER_ENTRY: "WATER_ENTRY",
+						  DIVE_COMPLETE: "COMPLETE"}
+			print(f"🔍 Frame {idx}: State={state_names.get(state, 'UNKNOWN')}, "
+				 f"Diver={'YES' if diver_in_zone else 'NO'}, "
+				 f"Splash={'YES' if splash_this_frame else 'NO'} ({splash_score:.1f})")
+
+		# Record state for video annotation (always track, not just in debug mode)
+		state_data[idx + start_search_at_idx] = state  # Adjust for search offset
+	# After main loop: Check final state for dive completion
+	if state == DIVE_COMPLETE and start_idx is not None and end_idx is not None:
+		# Successful dive detection
+		pass  # Will return properly below
+	elif state in [DIVER_PREPARATION, DIVE_EXECUTION, WATER_ENTRY]:
+		# Incomplete dive at end of video - evaluate if salvageable
+		if start_idx is not None and splash_peak_score > required_splash_intensity * 0.5:
+			end_idx = idx  # Use the last processed frame
+			confidence = 'low'
+			if debug:
+				print(f"⚠️  Incomplete dive at video end: frames {start_idx}-{end_idx}, confidence: {confidence}")
+		else:
+			# Discard incomplete dive without sufficient splash
+			if debug:
+				print(f"❌ Incomplete dive discarded (insufficient splash): state={state}, splash_peak={splash_peak_score:.1f}")
+			start_idx = None
+			end_idx = None
+			confidence = None
 
 	# Cleanup and performance reporting
 	if use_threading and pose is not None:
@@ -1376,8 +1742,18 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 			print("⚡ Pose optimization disabled - using full detection")
 		else:
 			print("⚡ Conservative optimization: full pose detection used (no safe skip opportunities)")
+
+	# Debug cleanup and final analysis
 	if debug:
 		cv2.destroyAllWindows()
+
+		# Generate final debug analysis if we have data
+		if debug_data is not None and len(debug_data['frame_indices']) > 0:
+			generate_final_debug_report(debug_data, start_idx, end_idx, video_fps)
+
+		# Close matplotlib figure
+		if debug_fig is not None:
+			plt.close(debug_fig)
 
 	# Adjust frame indices to account for the start_search_at_idx offset
 	if start_idx is not None:
@@ -1385,7 +1761,7 @@ def find_next_dive(frame_gen, board_y_norm, water_y_norm=0.95,
 	if end_idx is not None:
 		end_idx += start_search_at_idx
 
-	return start_idx, end_idx, confidence
+	return start_idx, end_idx, confidence, state_data
 
 def print_detailed_metrics(metrics, output_dir):
 	"""Print comprehensive metrics about the dive analysis performance."""
@@ -1436,11 +1812,19 @@ def print_detailed_metrics(metrics, output_dir):
 	extraction_times = metrics.get('extraction_times', [])
 	if extraction_times:
 		print("\n💾 Extraction Performance:")
-		avg_extraction = sum(e['extraction_time'] for e in extraction_times) / len(extraction_times)
-		print(f"    ⚡ Average Extraction: {avg_extraction:.2f}s")
-		print("    📊 Extraction Details:")
-		for ext_info in extraction_times:
-			print(f"       💾 Dive #{ext_info['dive_number']}: {ext_info['extraction_time']:.2f}s")
+		# Handle both formats: list of floats or list of dicts
+		if isinstance(extraction_times[0], dict):
+			avg_extraction = sum(e['extraction_time'] for e in extraction_times) / len(extraction_times)
+			print(f"    ⚡ Average Extraction: {avg_extraction:.2f}s")
+			print("    📊 Extraction Details:")
+			for ext_info in extraction_times:
+				print(f"       💾 Dive #{ext_info['dive_number']}: {ext_info['extraction_time']:.2f}s")
+		else:
+			avg_extraction = sum(extraction_times) / len(extraction_times)
+			print(f"    ⚡ Average Extraction: {avg_extraction:.2f}s")
+			print("    📊 Extraction Details:")
+			for i, extraction_time in enumerate(extraction_times):
+				print(f"       💾 Dive #{i+1}: {extraction_time:.2f}s")
 
 	# Output Information
 	print("\n📁 Output:")
@@ -1464,7 +1848,7 @@ def save_compact_performance_log(metrics, output_dir):
 		'dive_stats': {
 			'total_dives': len(metrics.get('dive_durations', [])),
 			'total_dive_frames': sum(d['duration_frames'] for d in metrics.get('dive_durations', [])),
-			'total_extraction_time': sum(e['extraction_time'] for e in metrics.get('extraction_times', [])),
+			'total_extraction_time': sum(metrics.get('extraction_times', [])) if metrics.get('extraction_times', []) and isinstance(metrics['extraction_times'][0], (int, float)) else sum(e['extraction_time'] for e in metrics.get('extraction_times', [])),
 			'avg_extraction_per_frame': 0
 		}
 	}
@@ -1561,19 +1945,23 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 
 	dives = []
 	start_search_at_idx = 0
-	extraction_futures = []
 	dive_counter = 0
 
-	# Create thread pool for immediate extractions
+	# Create thread pool for pose detection only (not for extractions)
 	max_extraction_workers = min(4, os.cpu_count() or 2)
 	executor = ThreadPoolExecutor(max_workers=max_extraction_workers)
-	print(f"🎬 Using {max_extraction_workers} background extraction threads")
+	print(f"🎬 Sequential extraction mode (no background threads)")
 
 	# Start detection timing
 	metrics['detection_start_time'] = time.time()
 
 	try:
 		while True:
+			# Check if we've reached the end of the video
+			if start_search_at_idx >= total_video_frames - 30:  # Leave at least 30 frames (1 second) for a dive
+				print(f"  -> Reached end of video at frame {start_search_at_idx}/{total_video_frames}. No more dives to search.")
+				break
+
 			frame_gen = frame_generator(video_path)
 			for _ in range(start_search_at_idx):
 				try:
@@ -1591,7 +1979,7 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 			# Update detection progress
 			progress_tracker.update_detection_progress(start_search_at_idx)
 
-			start_idx, end_idx, confidence = find_next_dive(
+			start_idx, end_idx, confidence, state_data = find_next_dive(
 				frame_gen, board_y_norm, water_y_norm,
 				splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
 				start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
@@ -1599,6 +1987,43 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 			)
 
 			if start_idx is not None and end_idx is not None:
+				# Add 3-second padding before and after the dive for complete context
+				padding_frames = int(3.0 * video_fps)  # 3 seconds in frames
+				original_start_idx = start_idx
+				original_end_idx = end_idx
+
+				# Apply padding first
+				padded_start_idx = start_idx - padding_frames
+				padded_end_idx = end_idx + padding_frames
+
+				# Then clamp to video bounds to prevent invalid extractions
+				start_idx = max(0, padded_start_idx)
+				end_idx = min(padded_end_idx, total_video_frames - 1)
+
+				# Report padding and clamping if applied
+				padding_info = []
+				if padded_start_idx != original_start_idx or padded_end_idx != original_end_idx:
+					padding_info.append(f"padded: ({original_start_idx}-{original_end_idx}) → ({padded_start_idx}-{padded_end_idx})")
+				if start_idx != padded_start_idx or end_idx != padded_end_idx:
+					padding_info.append(f"clamped: ({padded_start_idx}-{padded_end_idx}) → ({start_idx}-{end_idx})")
+				if padding_info:
+					print(f"  📐 Dive bounds adjusted: {', '.join(padding_info)} for video with {total_video_frames} frames")
+
+				# Validate frame range after clamping
+				if start_idx >= end_idx:
+					# If padding created an invalid range, fall back to original dive bounds with minimal clamping
+					print(f"  ⚠️  Padding created invalid range ({start_idx}-{end_idx}), using original dive bounds with boundary clamping")
+					start_idx = max(0, min(original_start_idx, total_video_frames - 1))
+					end_idx = min(original_end_idx, total_video_frames - 1)
+
+					# Final validation - if still invalid, use maximum possible range
+					if start_idx >= end_idx:
+						print(f"  ⚠️  Original dive bounds also invalid, using maximum available range")
+						start_idx = max(0, total_video_frames - min(int(2.0 * video_fps), total_video_frames))  # At least 2 seconds or full video
+						end_idx = total_video_frames - 1
+
+					print(f"  📐 Final dive bounds: {start_idx}-{end_idx} (ensuring dive is preserved)")
+
 				min_dive_frames = int(1.0 * video_fps)  # Dynamic minimum based on framerate
 				if (end_idx - start_idx) >= min_dive_frames:
 					confidence_text = f"({confidence} confidence)" if confidence == 'low' else ""
@@ -1630,16 +2055,26 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 					else:
 						metrics['low_confidence_dives'] += 1
 
-					# 🚀 IMMEDIATELY SPAWN BACKGROUND EXTRACTION THREAD
+					# 🚀 IMMEDIATELY EXTRACT DIVE (SEQUENTIAL TO AVOID CONFLICTS)
 					if output_dir:
-						print(f"    🎬 Starting background extraction for dive {dive_counter + 1}...")
-						future = executor.submit(
-							extract_and_save_dive,
-							video_path, dive_counter, start_idx, end_idx, confidence,
-							output_dir, diver_zone_norm, video_fps=video_fps,
-							show_pose_overlay=show_pose_overlay, preserve_audio=preserve_audio
-						)
-						extraction_futures.append((future, dive_counter + 1))
+						print(f"    🎬 Extracting dive {dive_counter + 1} immediately...")
+						try:
+							extraction_duration = extract_and_save_dive(
+								video_path, dive_counter, start_idx, end_idx, confidence,
+								output_dir, diver_zone_norm, video_fps=video_fps,
+								show_pose_overlay=show_pose_overlay, preserve_audio=preserve_audio,
+								state_data=state_data
+							)
+							print(f"    ✅ Dive {dive_counter + 1} extraction completed in {extraction_duration:.1f}s")
+
+							# Track extraction timing
+							if 'extraction_times' not in metrics:
+								metrics['extraction_times'] = []
+							metrics['extraction_times'].append(extraction_duration)
+
+						except Exception as e:
+							print(f"    ❌ Dive {dive_counter + 1} extraction failed: {e}")
+							# Continue with detection even if extraction fails
 
 					dive_counter += 1
 					start_search_at_idx = end_idx + 1
@@ -1658,37 +2093,28 @@ def detect_and_extract_dives_realtime(video_path, board_y_norm, water_y_norm,
 		# Transition to extraction phase
 		progress_tracker.detection_complete(metrics['dive_durations'])
 
-		# Wait for all background extractions to complete
-		if extraction_futures:
-			print(f"\n⏳ Waiting for {len(extraction_futures)} background extractions to complete...")
-			completed = 0
+		# All extractions are now complete (done sequentially during detection)
+		print(f"\n✅ All extractions completed during detection phase!")
 
-			for future, dive_num in extraction_futures:
-				try:
-					extraction_duration = future.result()  # This now returns the actual extraction time
-					completed += 1
-					print(f"    ✅ Dive {dive_num} extraction completed in {extraction_duration:.1f}s ({completed}/{len(extraction_futures)})")
+		# Calculate extraction metrics
+		if 'extraction_times' in metrics and metrics['extraction_times']:
+			total_extraction_time = sum(metrics['extraction_times'])
+			avg_extraction_time = total_extraction_time / len(metrics['extraction_times'])
+			metrics['total_extraction_time'] = total_extraction_time
+			metrics['avg_extraction_time'] = avg_extraction_time
+		else:
+			metrics['total_extraction_time'] = 0
+			metrics['avg_extraction_time'] = 0
 
-					# Update progress tracker
-					progress_tracker.dive_extraction_complete(dive_num)
+		print("🎉 All extractions completed!")
+		progress_tracker.extraction_complete()
 
-					# Track extraction timing
-					metrics['extraction_times'].append({
-						'dive_number': dive_num,
-						'extraction_time': extraction_duration
-					})
-
-				except Exception as e:
-					print(f"    ❌ Dive {dive_num} extraction failed: {e}")
-
-			print("🎉 All extractions completed!")
-			progress_tracker.extraction_complete()
-
-		# Mark end of extraction phase
-		metrics['extraction_end_time'] = time.time()
-		metrics['extraction_time'] = metrics['extraction_end_time'] - metrics['detection_end_time'] if metrics['detection_end_time'] else 0
+		# Mark end of extraction phase (same as detection end since sequential)
+		metrics['extraction_end_time'] = metrics['detection_end_time']
+		metrics['extraction_time'] = 0  # Included in detection time
 
 	finally:
+		# Clean up thread pool (though not used for extractions anymore)
 		executor.shutdown(wait=True)
 
 	# 📊 FINAL METRICS CALCULATION
@@ -1758,7 +2184,7 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 			break
 
 		print(f"Searching for a dive from frame {start_search_at_idx}...")
-		start_idx, end_idx, confidence = find_next_dive(
+		start_idx, end_idx, confidence, state_data = find_next_dive(
 			frame_gen, board_y_norm, water_y_norm,
 			splash_zone_top_norm, splash_zone_bottom_norm, diver_zone_norm,
 			start_search_at_idx=start_search_at_idx, debug=debug, splash_method=splash_method,
@@ -1779,7 +2205,7 @@ def detect_all_dives(video_path, board_y_norm, water_y_norm,
 			break
 	return dives
 
-def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidence, output_dir, diver_zone_norm=None, video_fps=None, show_pose_overlay=False, preserve_audio=True):
+def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidence, output_dir, diver_zone_norm=None, video_fps=None, show_pose_overlay=False, preserve_audio=False, state_data=None):
 	"""
 	Extracts a single dive, optionally annotates it with pose, and saves it as a separate video file.
 	Uses ROI processing for efficiency when diver_zone_norm is provided.
@@ -1789,6 +2215,7 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	Args:
 		show_pose_overlay: If True, draws pose landmarks on the video
 		preserve_audio: If True, uses FFmpeg to preserve audio from the source video
+		state_data: Dict with frame-to-state mapping for state annotations {frame_idx: state_value}
 	"""
 	extraction_start_time = time.time()
 
@@ -1809,12 +2236,19 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 	else:
 		print("  → Audio preservation: disabled")
 
-	# Get the first frame to determine video dimensions
-	try:
-		_, first_frame = next(frame_generator(video_path))  # Use native framerate
-		h, w = first_frame.shape[:2]
-	except StopIteration:
-		raise ValueError("Cannot extract from an empty video.")
+	# Get video dimensions directly from VideoCapture properties for accuracy
+	cap_temp = cv2.VideoCapture(video_path)
+	if not cap_temp.isOpened():
+		raise ValueError("Cannot open video file to get dimensions.")
+
+	w = int(cap_temp.get(cv2.CAP_PROP_FRAME_WIDTH))
+	h = int(cap_temp.get(cv2.CAP_PROP_FRAME_HEIGHT))
+	cap_temp.release()
+
+	if w <= 0 or h <= 0:
+		raise ValueError(f"Invalid video dimensions: {w}x{h}")
+
+	print(f"  → Video dimensions: {w}x{h} at {video_fps:.1f}fps")
 
 	# Determine temporary output path for video processing
 	temp_output_path = output_path
@@ -1823,6 +2257,12 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 
 	fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 	out = cv2.VideoWriter(temp_output_path, fourcc, video_fps, (w, h))
+
+	# Validate video writer initialization
+	if not out.isOpened():
+		raise ValueError(f"Failed to initialize video writer for {temp_output_path}")
+
+	print(f"  → VideoWriter initialized: codec=mp4v, fps={video_fps:.1f}, size=({w},{h})")
 
 	# Initialize pose detection only if needed
 	mp_pose = None
@@ -1836,15 +2276,41 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 		with suppress_stderr():
 			pose = mp_pose.Pose(static_image_mode=True)
 
-	# Create a fresh generator for processing
-	dive_frame_gen = frame_generator(video_path)  # Use native framerate
+	# Create a fresh generator for processing - SEQUENTIAL ACCESS (no locks needed)
+	cap = cv2.VideoCapture(video_path)
+	if not cap.isOpened():
+		raise ValueError(f"Cannot open video file: {video_path}")
 
-	for idx, frame in dive_frame_gen:
-		if idx < start_idx:
-			continue
-		if idx > end_idx:
-			break
+	# Get total frame count to prevent reading beyond video bounds
+	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+	# Clamp end_idx to video bounds
+	actual_end_idx = min(end_idx, total_frames - 1)
+	if actual_end_idx != end_idx:
+		print(f"  → Clamped end frame from {end_idx} to {actual_end_idx} (video has {total_frames} frames)")
+
+	# Validate frame range after clamping
+	if start_idx >= actual_end_idx:
+		cap.release()
+		raise ValueError(f"Invalid frame range: start={start_idx} >= end={actual_end_idx} after clamping. Dive detection may have found frames beyond video bounds.")
+
+	# Extract frames directly by frame number to ensure correct indices
+	frames_data = []
+	for frame_idx in range(start_idx, actual_end_idx + 1):
+		cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+		ret, frame = cap.read()
+		if ret:
+			frames_data.append((frame_idx, frame.copy()))
+		else:
+			print(f"Warning: Could not read frame {frame_idx}")
+
+	cap.release()
+
+	print(f"  → Successfully read {len(frames_data)} frames from video")
+
+	# Process frames outside the lock to minimize lock time
+	frames_written = 0
+	for frame_idx, frame in frames_data:
 		# It's good practice to work on a copy
 		annotated_frame = frame.copy()
 		h, w = annotated_frame.shape[:2]
@@ -1913,11 +2379,44 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 						mp_drawing.DrawingSpec(color=(0,0,255), thickness=2, circle_radius=2)
 					)
 
+		# Add state annotation overlay if state data is provided
+		if state_data and frame_idx in state_data:
+			current_state = state_data[frame_idx]
+
+			# Define state colors and names
+			state_info = {
+				0: ("WAITING", (128, 128, 128)),           # Gray
+				1: ("PREPARATION", (0, 255, 255)),         # Yellow
+				2: ("EXECUTION", (0, 165, 255)),           # Orange
+				3: ("WATER_ENTRY", (0, 255, 0)),           # Green
+				4: ("COMPLETE", (255, 0, 0))               # Blue
+			}
+
+			state_name, state_color = state_info.get(current_state, ("UNKNOWN", (255, 255, 255)))
+
+			# Draw state indicator box in top-right corner
+			box_width = 250
+			box_height = 60
+			box_x = w - box_width - 20
+			box_y = 20
+
+			# Semi-transparent background
+			overlay = annotated_frame.copy()
+			cv2.rectangle(overlay, (box_x, box_y), (box_x + box_width, box_y + box_height), (0, 0, 0), -1)
+			cv2.addWeighted(overlay, 0.7, annotated_frame, 0.3, 0, annotated_frame)
+
+			# State border and text
+			cv2.rectangle(annotated_frame, (box_x, box_y), (box_x + box_width, box_y + box_height), state_color, 3)
+			cv2.putText(annotated_frame, f"STATE: {state_name}", (box_x + 10, box_y + 25),
+				cv2.FONT_HERSHEY_SIMPLEX, 0.6, state_color, 2)
+			cv2.putText(annotated_frame, f"Frame: {frame_idx}", (box_x + 10, box_y + 45),
+				cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
 		# Add takeoff/entry text with confidence indicator
-		if idx == start_idx:
+		if frame_idx == start_idx:
 			cv2.putText(annotated_frame, "DIVE START", (50,50),
 				cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,0), 3)
-		elif idx == end_idx:
+		elif frame_idx == end_idx:
 			entry_text = "DIVE END"
 			if confidence == 'low':
 				entry_text += " (LOW CONF)"
@@ -1926,6 +2425,11 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 				cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
 
 		out.write(annotated_frame)
+		frames_written += 1
+
+	print(f"  → Frames written to video: {frames_written}")
+
+	# Clean up resources - cap already released in the lock above
 
 	# Clean up pose resources if used
 	if pose is not None:
@@ -1938,34 +2442,53 @@ def extract_and_save_dive(video_path, dive_number, start_idx, end_idx, confidenc
 		try:
 			# Calculate time range for audio extraction
 			start_time_seconds = start_idx / video_fps
-			duration_seconds = (end_idx - start_idx + 1) / video_fps
+			duration_seconds = (actual_end_idx - start_idx + 1) / video_fps
 
-			# Use FFmpeg to extract the video segment with audio
-			ffmpeg_cmd = [
-				'ffmpeg', '-y',  # -y to overwrite output file
-				'-i', video_path,  # Input video with audio
-				'-i', temp_output_path,  # Input video-only file
-				'-ss', str(start_time_seconds),  # Start time
-				'-t', str(duration_seconds),  # Duration
-				'-c:v', 'copy',  # Copy video from the video-only file
-				'-c:a', 'aac',  # Encode audio to AAC
-				'-map', '1:v:0',  # Use video from second input (our processed video)
-				'-map', '0:a:0',  # Use audio from first input (original video)
-				'-shortest',  # Stop when shortest stream ends
+			# Step 1: Extract audio segment from original video
+			temp_audio_path = temp_output_path.replace('.mp4', '_audio.aac')
+			audio_extract_cmd = [
+				'ffmpeg', '-y',
+				'-i', video_path,
+				'-ss', str(start_time_seconds),
+				'-t', str(duration_seconds),
+				'-vn',  # No video
+				'-acodec', 'aac',
+				temp_audio_path
+			]
+
+			print(f"  → Extracting audio segment from {start_time_seconds:.1f}s for {duration_seconds:.1f}s")
+			audio_result = subprocess.run(audio_extract_cmd, capture_output=True, text=True, timeout=15)
+
+			if audio_result.returncode != 0:
+				raise Exception(f"Audio extraction failed: {audio_result.stderr}")
+
+			# Step 2: Combine processed video with extracted audio
+			combine_cmd = [
+				'ffmpeg', '-y',
+				'-i', temp_output_path,  # Processed video
+				'-i', temp_audio_path,   # Extracted audio
+				'-c:v', 'copy',         # Copy video as-is
+				'-c:a', 'copy',         # Copy audio as-is
+				'-shortest',            # Match shortest stream
 				output_path
 			]
 
-			# Run FFmpeg command
-			result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+			print("  → Combining video and audio")
+			combine_result = subprocess.run(combine_cmd, capture_output=True, text=True, timeout=15)
 
-			if result.returncode == 0:
-				# Remove temporary video-only file
-				os.remove(temp_output_path)
+			if combine_result.returncode == 0:
+				# Clean up temporary files
+				if os.path.exists(temp_output_path):
+					os.remove(temp_output_path)
+				if os.path.exists(temp_audio_path):
+					os.remove(temp_audio_path)
 				print(f"  ✅ Audio successfully preserved in {output_path}")
 			else:
-				print("  ⚠️  FFmpeg failed, keeping video-only version:")
-				print(f"     Error: {result.stderr}")
-				# Rename temp file to final output
+				print("  ⚠️  FFmpeg combination failed, keeping video-only version:")
+				print(f"     Error: {combine_result.stderr}")
+				# Clean up and rename temp file to final output
+				if os.path.exists(temp_audio_path):
+					os.remove(temp_audio_path)
 				os.rename(temp_output_path, output_path)
 
 		except subprocess.TimeoutExpired:
