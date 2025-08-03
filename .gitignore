@@ -1,2 +1,3 @@
 data/raw_videos/*
 data/pose_analysis/*
+.ruff_cache/
