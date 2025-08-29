@@ -22,7 +22,6 @@ import os
 import sys
 import cv2
 import numpy as np
-import pandas as pd
 import argparse
 import time
 import json
@@ -31,6 +30,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 import warnings
+import subprocess
 
 # Scientific computing imports
 try:
@@ -86,6 +86,13 @@ except ImportError:
 				print(f"\r{self.desc}: {percent:.1f}% ({self.n}/{self.total}) "
 					  f"[{rate:.1f}{self.unit}/s]", end='', flush=True)
 				self.last_print_n = self.n
+
+		def set_description(self, desc):
+			self.desc = desc
+
+		def write(self, s):
+			# Fallback write method for tqdm compatibility
+			print(s, end='', flush=True)
 
 		def close(self):
 			if self.total:
@@ -153,6 +160,7 @@ class DetectionConfig:
 
 	# Event validation parameters
 	min_extraction_score: float = 15.0  # Minimum score to extract a dive
+	audio_offset_seconds: float = 0.0  # Audio alignment tweak (seconds). Positive value delays audio, negative advances it.
 	auto_extract_threshold: bool = False  # Auto-calculate extraction threshold
 	high_confidence_threshold: float = 20.0  # Threshold for high confidence events
 	medium_confidence_threshold: float = 12.0  # Threshold for medium confidence events
@@ -175,6 +183,9 @@ class DetectionConfig:
 	enable_debug_plots: bool = True
 	save_debug_frames: bool = False
 	debug_output_dir: str = "debug_splash_detection"
+
+	# Audio alignment tweak (seconds). Positive value delays audio, negative advances it.
+	audio_offset_seconds: float = 0.0
 
 class GaussianSplashFilter:
 	"""
@@ -832,6 +843,7 @@ class SplashOnlyDetector:
 		self.gaussian_filter = GaussianSplashFilter(config)
 		self.peak_detector = PeakDetector(config)
 		self.global_analyzer = GlobalContextAnalyzer(config)  # Add global analyzer
+		self.audio_offset_seconds = config.audio_offset_seconds  # Initialize audio offset
 
 		# Initialize enhanced detection system if available and requested
 		self.enhanced_aggregator = None
@@ -872,23 +884,6 @@ class SplashOnlyDetector:
 		if self.config.enable_debug_plots:
 			os.makedirs(self.config.debug_output_dir, exist_ok=True)
 
-	def _init_debug_data(self) -> dict:
-		"""Initialize or reset debug data collection"""
-		return {
-			'frame_indices': [],
-			'timestamps': [],
-			'raw_scores': [],
-			'filtered_scores': [],
-			'thresholds': [],
-			'detected_peaks': [],
-			'statistics': [],
-			# Enhanced detection debug data
-			'enhanced_scores': [],
-			'enhanced_final_scores': [],
-			'enhanced_gate_pass': [],
-			'enhanced_detector_counts': []
-		}
-
 	def _print_or_buffer(self, message: str):
 		"""Print message immediately or buffer it if in quiet mode"""
 		if self.quiet_mode:
@@ -918,13 +913,7 @@ class SplashOnlyDetector:
 
 		# First pass: Standard detection to get all candidate events
 		print(f"\n🌊 PASS {pass_number}: Initial detection")
-
-		if self.config.method == 'enhanced_weighted':
-			# Enhanced detection multipass
-			return self._detect_splashes_enhanced_multipass(video_path)
-		else:
-			# Traditional detection multipass
-			initial_events = self.detect_splashes_in_video(video_path)
+		initial_events = self.detect_splashes_in_video(video_path)
 
 		if not initial_events:
 			print("❌ No events detected in initial pass")
@@ -945,12 +934,19 @@ class SplashOnlyDetector:
 		# Multi-pass detection: Remove dominant splashes and re-detect
 		current_data = self.debug_data.copy()
 		removed_events = high_confidence_events.copy()
+		# Collect suppressed score arrays for each pass (pass 1 = original data)
+		suppressed_passes = [np.array(current_data.get('filtered_scores', []), dtype=float)]
+		# Keep a history of removed event counts (useful for annotation)
+		removed_history = [len(removed_events)]
 
 		for pass_num in range(2, max_passes + 1):
 			print(f"\n🔄 PASS {pass_num}: Re-analyzing after removing {len(removed_events)} dominant splashes")
 
 			# Create suppressed score data by masking areas around removed events
 			suppressed_scores = self._suppress_dominant_events(current_data, removed_events)
+			# Record suppressed scores for this pass (pass_num-1 corresponds to this new suppression)
+			suppressed_passes.append(np.array(suppressed_scores, dtype=float))
+			removed_history.append(len(removed_events))
 
 			# Re-analyze with suppressed data to find missed smaller events
 			missed_events = self._detect_missed_events(suppressed_scores, current_data, all_detected_events)
@@ -975,73 +971,37 @@ class SplashOnlyDetector:
 		print(f"📊 Total events across all passes: {len(all_detected_events)}")
 		print(f"📈 Improvement: +{len(all_detected_events) - len(high_confidence_events)} additional events detected")
 
+		# Bonus debug plot: show suppressed dominant event across passes (saved to disk)
+		try:
+			if self.config.enable_debug_plots and MATPLOTLIB_AVAILABLE and len(suppressed_passes) > 0:
+				os.makedirs(self.config.debug_output_dir, exist_ok=True)
+				timestamps = np.array(current_data.get('timestamps', []), dtype=float)
+				fig, ax = plt.subplots(figsize=(14, 6))
+				for i, scores in enumerate(suppressed_passes):
+					# Plot each pass with decreasing alpha to show suppression
+					alpha = max(0.15, 1.0 - (i * 0.25))
+					label = f"Pass {i+1}"
+					if timestamps.size == scores.size:
+						ax.plot(timestamps, scores, label=label, alpha=alpha)
+					else:
+						# Fallback: plot by index if timestamps mismatch
+						ax.plot(np.arange(len(scores)) / max(1.0, 30.0), scores, label=label, alpha=alpha)
+				ax.set_xlabel('Time (s)')
+				ax.set_ylabel('Filtered Score')
+				ax.set_title('Suppressed Dominant Event Across Passes')
+				ax.grid(True, alpha=0.3)
+				ax.legend(loc='upper right', fontsize='small')
+				fn = os.path.join(self.config.debug_output_dir, f"suppression_passes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+				plt.tight_layout()
+				plt.savefig(fn, dpi=150, bbox_inches='tight')
+				plt.close(fig)
+				print(f"📁 Saved suppression pass plot: {fn}")
+		except Exception as e:
+			print(f"Failed to save suppression pass plot: {e}")
+
 		# Update detector's events list for debug plotting
 		self.detected_events = all_detected_events
 
-		return all_detected_events
-
-	def _detect_splashes_enhanced_multipass(self, video_path: str) -> List[SplashEvent]:
-		"""
-		Enhanced multi-pass hierarchical detection using stored scores (same pattern as traditional)
-		"""
-		print(f"🔬 ENHANCED MULTI-PASS DETECTION")
-		print(f"================================")
-
-		all_detected_events = []
-		max_passes = 3
-
-		# First pass: Enhanced detection to get all candidate events AND store the scores
-		print(f"\n🌊 PASS 1: Enhanced initial detection")
-		initial_events = self.detect_splashes_in_video(video_path)
-
-		if not initial_events:
-			print("❌ No events detected in enhanced initial pass")
-			return []
-
-		# Store the enhanced debug data for multipass processing
-		enhanced_debug_data = self.debug_data.copy()
-
-		# Enhanced detection uses confidence scoring, adapt thresholds
-		high_confidence_events = [e for e in initial_events if e.confidence == 'high' and e.filtered_score >= 20]
-		medium_confidence_events = [e for e in initial_events if e.confidence in ['high', 'medium'] and e.filtered_score >= 15]
-
-		print(f"📊 Enhanced initial detection: {len(initial_events)} total events")
-		print(f"   • High confidence (score ≥20): {len(high_confidence_events)}")
-		print(f"   • Medium+ confidence (score ≥15): {len(medium_confidence_events)}")
-
-		# Add high confidence events to final results
-		all_detected_events.extend(high_confidence_events)
-
-		# Multi-pass detection: Suppress dominant events and re-detect using stored scores
-		suppressed_events = high_confidence_events.copy()
-
-		for pass_num in range(2, max_passes + 1):
-			print(f"\n🔄 ENHANCED PASS {pass_num}: Re-analyzing after suppressing {len(suppressed_events)} dominant events")
-
-			# Create suppressed score data by masking areas around removed events (same as traditional)
-			suppressed_scores = self._suppress_dominant_events(enhanced_debug_data, suppressed_events)
-
-			# Re-analyze with suppressed data to find missed smaller events
-			missed_events = self._detect_missed_events(suppressed_scores, enhanced_debug_data, all_detected_events)
-
-			if not missed_events:
-				print(f"   ✅ No additional events found in enhanced pass {pass_num}")
-				break
-
-			print(f"   🎯 Found {len(missed_events)} additional enhanced events:")
-			for event in missed_events:
-				print(f"      • t={event.timestamp:.1f}s, score={event.filtered_score:.1f}, confidence={event.confidence}")
-
-			# Add new events and prepare for next pass
-			all_detected_events.extend(missed_events)
-			suppressed_events.extend(missed_events)
-
-		# Final sorting and cleanup
-		all_detected_events.sort(key=lambda e: e.timestamp)
-
-		print(f"\n✅ Enhanced multi-pass detection complete: {len(all_detected_events)} total events")
-		print(f"📈 Improvement: +{len(all_detected_events) - len(high_confidence_events)} additional events detected")
-		self.detected_events = all_detected_events
 		return all_detected_events
 
 	def compare_detection_methods(self, video_path: str, debug: bool = False) -> Dict:
@@ -1071,34 +1031,6 @@ class SplashOnlyDetector:
 		self.config.method = 'enhanced_weighted'
 		self.detected_events = []
 		self.debug_data = self._init_debug_data()
-
-		# Initialize enhanced aggregator if not already done
-		if self.enhanced_aggregator is None:
-			if ENHANCED_DETECTION_AVAILABLE:
-				from detection_tool import SplashSignalAggregator
-				# Configure aggregator with enhanced options
-				fusion_weights = {
-					'flow': 0.2546816479400749,
-					'contour': 0.2529530394698934,
-					'diff': 0.25122443099971187,
-					'motion': 0.24114088159031977
-				}
-				min_thresholds = {
-					'flow': 0.05,
-					'contour': 100.0,
-					'diff': 150.0,
-					'motion': 3.0
-				}
-				self.enhanced_aggregator = SplashSignalAggregator(
-					self,
-					fusion_weights=fusion_weights,
-					min_thresholds=min_thresholds,
-					temporal_consistency=True,
-					min_splash_duration=3,
-					min_detectors_required=1,
-					temporal_bonus_factor=0.8
-				)
-
 		enhanced_events = self._detect_with_enhanced_system(video_path)
 		enhanced_debug = self.debug_data.copy()
 
@@ -1194,42 +1126,28 @@ class SplashOnlyDetector:
 		suppressed_scores = np.array(debug_data['filtered_scores']).copy()
 		timestamps = np.array(debug_data['timestamps'])
 
-		# For each dominant event, reduce scores in surrounding temporal window
-		suppression_window = 15.0  # seconds to suppress around each dominant event
-		suppression_factor = 0.3   # Reduce scores to 30% of original
+		# For each dominant event, reduce scores in a tight temporal window
+		# Use an adaptive, score-based suppression window (total seconds) so we don't wipe
+		# nearby smaller events. The window is clamped to a sensible range.
+		min_total_sec = 0.6   # minimum total suppression window (s)
+		max_total_sec = 3.0   # maximum total suppression window (s)
+		suppression_base_factor = 0.3  # Reduce scores to this factor by default
 
 		for event in events_to_suppress:
-			# Find temporal window around this event
-			start_time = event.timestamp - suppression_window / 2
-			end_time = event.timestamp + suppression_window / 2
+			# Adaptive suppression width based on event strength (filtered_score)
+			# Scale: stronger events get slightly wider suppression but remain bounded
+			suppression_total = float(np.clip(event.filtered_score * 0.06, min_total_sec, max_total_sec))
+			half_win = suppression_total / 2.0
+
+			# Find temporal window tightly centered on the event timestamp
+			start_time = event.timestamp - half_win
+			end_time = event.timestamp + half_win
 
 			# Find indices in this window
 			window_mask = (timestamps >= start_time) & (timestamps <= end_time)
 
-			# Suppress scores in this window (but don't zero them completely)
-			suppressed_scores[window_mask] *= suppression_factor
-
-		return suppressed_scores.tolist()
-		"""
-		Create suppressed score data by reducing scores around dominant splash events
-		"""
-		suppressed_scores = np.array(debug_data['filtered_scores']).copy()
-		timestamps = np.array(debug_data['timestamps'])
-
-		# For each dominant event, reduce scores in surrounding temporal window
-		suppression_window = 15.0  # seconds to suppress around each dominant event
-		suppression_factor = 0.3   # Reduce scores to 30% of original
-
-		for event in events_to_suppress:
-			# Find temporal window around this event
-			start_time = event.timestamp - suppression_window / 2
-			end_time = event.timestamp + suppression_window / 2
-
-			# Find indices in this window
-			window_mask = (timestamps >= start_time) & (timestamps <= end_time)
-
-			# Suppress scores in this window (but don't zero them completely)
-			suppressed_scores[window_mask] *= suppression_factor
+			# Suppress scores in this tight window (but don't zero them completely)
+			suppressed_scores[window_mask] *= suppression_base_factor
 
 		return suppressed_scores.tolist()
 
@@ -1238,35 +1156,17 @@ class SplashOnlyDetector:
 		"""
 		Detect missed events in suppressed score data using lower thresholds
 		"""
-		# Check if we have any data to work with
-		if not suppressed_scores or len(suppressed_scores) == 0:
-			print(f"   ⚠️  No suppressed score data available for missed event detection")
-			return []
-
 		# Calculate new statistics on suppressed data
 		scores_array = np.array(suppressed_scores)
-
-		# Check if we have valid scores
-		if len(scores_array) == 0 or np.all(np.isnan(scores_array)):
-			print(f"   ⚠️  All suppressed scores are invalid, skipping missed event detection")
-			return []
-
-		# Filter out NaN and infinite values
-		valid_scores = scores_array[np.isfinite(scores_array)]
-		if len(valid_scores) == 0:
-			print(f"   ⚠️  No valid finite scores available for missed event detection")
-			return []
-
-		background_level = np.mean(valid_scores)
-		noise_level = np.std(valid_scores)
+		background_level = np.mean(scores_array)
+		noise_level = np.std(scores_array)
 
 		# Use more aggressive thresholds for missed events
-		percentile_75 = np.percentile(valid_scores, 75) if len(valid_scores) > 0 else background_level
-		percentile_85 = np.percentile(valid_scores, 85) if len(valid_scores) > 0 else background_level
+		percentile_75 = np.percentile(scores_array, 75)
+		percentile_85 = np.percentile(scores_array, 85)
 		adaptive_threshold = max(background_level + 2 * noise_level, percentile_75)
 
 		print(f"   📊 Suppressed data statistics:")
-		print(f"      • Valid scores: {len(valid_scores)}/{len(scores_array)}")
 		print(f"      • Background: {background_level:.2f}")
 		print(f"      • Noise (std): {noise_level:.2f}")
 		print(f"      • 75th percentile: {percentile_75:.2f}")
@@ -1275,21 +1175,15 @@ class SplashOnlyDetector:
 		# Find peaks in suppressed data with adaptive distance
 		adaptive_distance = int(2.0 * 30)  # Reduced to 2 seconds for close sequential dives
 		if SCIPY_AVAILABLE:
-			try:
-				peaks, properties = find_peaks(
-					suppressed_scores,
-					height=adaptive_threshold,
-					distance=adaptive_distance,  # 2 second minimum distance at 30fps
-					prominence=max(1.0, noise_level * 0.5)  # Reduced prominence for smaller events
-				)
-			except Exception as e:
-				print(f"   ⚠️  Peak detection failed: {e}, using fallback method")
-				peaks = []
+			peaks, properties = find_peaks(
+				suppressed_scores,
+				height=adaptive_threshold,
+				distance=adaptive_distance,  # 2 second minimum distance at 30fps
+				prominence=max(1.0, noise_level * 0.5)  # Reduced prominence for smaller events
+			)
 		else:
+			# Fallback: simple peak detection with reduced distance
 			peaks = []
-
-		# Fallback: simple peak detection with reduced distance
-		if len(peaks) == 0:
 			min_distance_frames = adaptive_distance
 			for i in range(min_distance_frames, len(suppressed_scores) - min_distance_frames):
 				if (suppressed_scores[i] > suppressed_scores[i-1] and
@@ -1413,121 +1307,81 @@ class SplashOnlyDetector:
 		# Process video with enhanced aggregator
 		signals_df = self.enhanced_aggregator.process_video(video_path, self.config)
 
-		# Convert signals to splash events using quantile-based thresholding and peak detection
+		# Convert signals to splash events using quantile-based thresholding
 		events = self._convert_enhanced_signals_to_events(signals_df, video_path)
 
-		# Apply the same global context analysis and filtering as traditional method
-		print("\n🧠 ENHANCED DETECTION GLOBAL FILTERING")
-		print("=" * 40)
-
-		# Store events in detected_events for filtering
-		self.detected_events = events
-
-		# Create mock debug data for the global analyzer (it expects traditional structure)
-		enhanced_debug_data = {
-			'frame_indices': signals_df['frame'].tolist(),
-			'timestamps': (signals_df['frame'] / get_video_fps(video_path)).tolist(),
-			'raw_scores': signals_df['combined_score'].tolist(),
-			'filtered_scores': signals_df['final_score'].tolist(),
-			'thresholds': [signals_df['final_score'].quantile(0.80)] * len(signals_df),
-			'statistics': [{'mean': signals_df['final_score'].mean(), 'std': signals_df['final_score'].std()}] * len(signals_df)
-		}
-
-		# Apply global context analysis for intelligent filtering (same as traditional)
-		filtered_events = self.global_analyzer.analyze_and_filter_events(
-			self.detected_events, enhanced_debug_data
-		)
-
-		print(f"✅ Enhanced detection complete: {len(filtered_events)} splash events found after global filtering")
-		print(f"📊 Filtering removed: {len(events) - len(filtered_events)} events")
-
-		return filtered_events
+		print(f"✅ Enhanced detection complete: {len(events)} splash events found")
+		return events
 
 	def _convert_enhanced_signals_to_events(self, signals_df, video_path: str) -> List[SplashEvent]:
-		"""Convert enhanced detection signals to SplashEvent objects using proper peak detection"""
+		"""Convert enhanced detection signals to SplashEvent objects"""
 		events = []
 		video_fps = get_video_fps(video_path)
 
 		# Use 80th percentile as threshold (optimal from our analysis)
 		threshold = signals_df['final_score'].quantile(0.80)
 
+		# Find frames above threshold
+		candidate_frames = signals_df[signals_df['final_score'] > threshold]
+
 		print(f"🎯 Enhanced detection threshold: {threshold:.3f}")
+		print(f"📊 Candidate frames: {len(candidate_frames)}/{len(signals_df)} ({len(candidate_frames)/len(signals_df)*100:.1f}%)")
 
-		# Apply proper peak detection like traditional method
-		scores = signals_df['final_score'].values
-		timestamps = signals_df['frame'].values / video_fps
+		# Group consecutive frames into events
+		if len(candidate_frames) > 0:
+			frame_indices = candidate_frames['frame'].values
+			scores = candidate_frames['final_score'].values
 
-		# Use the same peak detection parameters as traditional method
-		min_distance_frames = int(self.config.min_peak_distance * video_fps / 30.0)  # Scale with FPS
-		min_prominence = threshold * 0.3  # Relative to threshold
+			# Find groups of consecutive frames
+			groups = []
+			current_group = [frame_indices[0]]
+			current_scores = [scores[0]]
 
-		# Find peaks using scipy if available, otherwise fallback
-		try:
-			from scipy.signal import find_peaks
-			peaks, properties = find_peaks(
-				scores,
-				height=threshold,
-				distance=min_distance_frames,
-				prominence=min_prominence
-			)
-		except ImportError:
-			# Fallback: simple peak detection
-			peaks = []
-			for i in range(min_distance_frames, len(scores) - min_distance_frames):
-				if (scores[i] > scores[i-1] and
-					scores[i] > scores[i+1] and
-					scores[i] >= threshold):
-					# Check minimum distance to other peaks
-					too_close = False
-					for existing_peak in peaks:
-						if abs(i - existing_peak) < min_distance_frames:
-							too_close = True
-							break
-					if not too_close:
-						peaks.append(i)
+			for i in range(1, len(frame_indices)):
+				if frame_indices[i] - frame_indices[i-1] <= 5:  # Allow small gaps
+					current_group.append(frame_indices[i])
+					current_scores.append(scores[i])
+				else:
+					groups.append((current_group, current_scores))
+					current_group = [frame_indices[i]]
+					current_scores = [scores[i]]
 
-		print(f"📊 Peak detection: {len(peaks)} peaks found from {len(scores)} frames")
-		print(f"🎯 Peak parameters: min_distance={min_distance_frames} frames, min_prominence={min_prominence:.2f}")
+			if current_group:
+				groups.append((current_group, current_scores))
 
-		# Convert peaks to events
-		for peak_idx in peaks:
-			frame_data = signals_df.iloc[peak_idx]
-			peak_frame = int(frame_data['frame'])
-			peak_score = frame_data['final_score']
-			timestamp = peak_frame / video_fps
+			# Convert groups to events
+			for group_frames, group_scores in groups:
+				# Use frame with highest score as event center
+				max_idx = np.argmax(group_scores)
+				peak_frame = group_frames[max_idx]
+				peak_score = group_scores[max_idx]
 
-			# Determine confidence based on score and gate pass
-			if peak_score > threshold * 1.5 and frame_data['gate_pass']:
-				confidence = 'high'
-			elif frame_data['gate_pass']:
-				confidence = 'medium'
-			else:
-				confidence = 'low'
+				# Get enhanced detection details for this frame
+				frame_data = signals_df[signals_df['frame'] == peak_frame].iloc[0]
 
-			# Create event with proper score mapping
-			event = SplashEvent(
-				frame_idx=peak_frame,
-				timestamp=timestamp,
-				score=float(frame_data['combined_score']),
-				filtered_score=float(peak_score),
-				confidence=confidence,
-				zone_info={
-					'method': 'enhanced_weighted',
-					'gate_pass': bool(frame_data['gate_pass']),
-					'detector_count': int(frame_data['min_detectors_count']),
-					'temporal_bonus': float(frame_data.get('temporal_bonus', 1.0))
-				},
-				detection_method='enhanced_weighted'
-			)
-			events.append(event)
+				# Determine confidence based on score and gate pass
+				if peak_score > threshold * 1.5 and frame_data['gate_pass']:
+					confidence = 'high'
+				elif frame_data['gate_pass']:
+					confidence = 'medium'
+				else:
+					confidence = 'low'
 
-		# Sort events by timestamp for consistency
-		events.sort(key=lambda e: e.timestamp)
-
-		print(f"📊 Enhanced events after peak detection: {len(events)}")
-		if events:
-			scores_range = [e.filtered_score for e in events]
-			print(f"📈 Score range: {min(scores_range):.1f} - {max(scores_range):.1f}")
+				event = SplashEvent(
+					frame_idx=int(peak_frame),
+					timestamp=peak_frame / video_fps,
+					score=float(frame_data['combined_score']),
+					filtered_score=float(peak_score),
+					confidence=confidence,
+					zone_info={
+						'method': 'enhanced_weighted',
+						'gate_pass': bool(frame_data['gate_pass']),
+						'detector_count': int(frame_data['min_detectors_count']),
+						'temporal_bonus': float(frame_data.get('temporal_bonus', 1.0))
+					},
+					detection_method='enhanced_weighted'
+				)
+				events.append(event)
 
 		return events
 
@@ -1803,11 +1657,6 @@ class SplashOnlyDetector:
 		filtered_scores = np.array(self.debug_data['filtered_scores'])
 		thresholds = np.array(self.debug_data['thresholds'])
 
-		# Validate that we have data to plot
-		if len(timestamps) == 0:
-			print("⚠️  Warning: No debug data available for plotting")
-			return
-
 		# MAIN PLOT: Detailed Detection Analysis
 		# Background and noise bands
 		background_estimates = [stat['background'] for stat in self.debug_data['statistics']]
@@ -1860,10 +1709,9 @@ class SplashOnlyDetector:
 		ax_main.legend(loc='upper right')
 		ax_main.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
 
-		# Enhanced grid for precise timing with validation
-		max_time = max(timestamps) if len(timestamps) > 0 else 60
-		ax_main.set_xticks(np.arange(0, max_time, 30))  # Major ticks every 30s
-		ax_main.set_xticks(np.arange(0, max_time, 5), minor=True)  # Minor ticks every 5s
+		# Enhanced grid for precise timing
+		ax_main.set_xticks(np.arange(0, max(timestamps), 30))  # Major ticks every 30s
+		ax_main.set_xticks(np.arange(0, max(timestamps), 5), minor=True)  # Minor ticks every 5s
 		ax_main.grid(True, which='minor', alpha=0.2, linestyle=':', linewidth=0.3)
 
 		# PEAKS ANALYSIS
@@ -2281,12 +2129,13 @@ def extract_dive_around_splash(video_path: str, splash_event: SplashEvent,
 	w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 	h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-	# Create video writer
+	# Create temporary video writer (video-only)
+	temp_output_path = output_path.replace('.mp4', '_video_only.mp4')
 	fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-	out = cv2.VideoWriter(output_path, fourcc, video_fps, (w, h))
+	out = cv2.VideoWriter(temp_output_path, fourcc, video_fps, (w, h))
 
 	if not out.isOpened():
-		raise ValueError(f"Cannot create output video: {output_path}")
+		raise ValueError(f"Cannot create output video: {temp_output_path}")
 
 	# Extract frames
 	cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -2326,14 +2175,101 @@ def extract_dive_around_splash(video_path: str, splash_event: SplashEvent,
 
 	duration = extracted_frames / video_fps
 
-	# Use progress callback to write success message instead of print
-	success_msg = f"✅ Dive {dive_number + 1}: {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
-	if progress_callback:
-		progress_callback.write(success_msg)
-	else:
-		print(success_msg)
+	# Attempt to preserve audio using FFmpeg: extract audio segment and remux
+	try:
+		print("  🎵 Attempting to preserve audio for extracted clip...")
+		start_time_seconds = start_frame / video_fps
+		duration_seconds = duration
 
-	return output_path
+		temp_audio_path = temp_output_path.replace('.mp4', '_audio.m4a')
+		# Extract audio from source and re-encode to AAC m4a using precise seek (place -ss after -i)
+		audio_extract_cmd = [
+			'ffmpeg', '-y',
+			'-i', video_path,
+			'-ss', str(start_time_seconds),
+			'-t', str(duration_seconds),
+			'-vn',
+			'-c:a', 'aac',
+			'-b:a', '128k',
+			temp_audio_path
+		]
+		audio_res = subprocess.run(audio_extract_cmd, capture_output=True, text=True, timeout=30)
+		if audio_res.returncode != 0:
+			raise Exception(f"Audio extraction failed: {audio_res.stderr}")
+
+		# Combine video-only temp file with extracted audio into final output
+		audio_offset = getattr(config, 'audio_offset_seconds', 0.0)
+		combine_cmd = ['ffmpeg', '-y']
+		combine_cmd += ['-i', temp_output_path]
+		if abs(audio_offset) > 1e-6:
+			# Apply offset to following input (audio). Positive delays audio, negative advances it.
+			combine_cmd += ['-itsoffset', f"{audio_offset}"]
+		combine_cmd += ['-i', temp_audio_path,
+						'-map', '0:v:0',
+						'-map', '1:a:0',
+						'-c:v', 'copy',
+						'-c:a', 'aac',
+						'-b:a', '128k',
+						'-shortest',
+						output_path]
+		combine_res = subprocess.run(combine_cmd, capture_output=True, text=True, timeout=30)
+
+		if combine_res.returncode == 0:
+			# Cleanup temp files
+			if os.path.exists(temp_output_path):
+				os.remove(temp_output_path)
+			if os.path.exists(temp_audio_path):
+				os.remove(temp_audio_path)
+			success_msg = f"✅ Dive {dive_number + 1}: {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
+			if progress_callback:
+				progress_callback.write(success_msg)
+			else:
+				print(success_msg)
+			return output_path
+		else:
+			print(f"  ⚠️  FFmpeg combine failed, keeping video-only: {combine_res.stderr}")
+			# Cleanup audio temp and fallback to video-only
+			if os.path.exists(temp_audio_path):
+				os.remove(temp_audio_path)
+			os.rename(temp_output_path, output_path)
+			success_msg = f"✅ Dive {dive_number + 1} (no-audio): {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
+			if progress_callback:
+				progress_callback.write(success_msg)
+			else:
+				print(success_msg)
+			return output_path
+
+	except subprocess.TimeoutExpired:
+		print("  ⚠️  FFmpeg timed out, keeping video-only version")
+		if os.path.exists(temp_output_path):
+			os.rename(temp_output_path, output_path)
+		success_msg = f"✅ Dive {dive_number + 1} (no-audio - timeout): {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
+		if progress_callback:
+			progress_callback.write(success_msg)
+		else:
+			print(success_msg)
+		return output_path
+	except FileNotFoundError:
+		print("  ⚠️  FFmpeg not found, keeping video-only version")
+		print("     Install FFmpeg to enable audio preservation")
+		if os.path.exists(temp_output_path):
+			os.rename(temp_output_path, output_path)
+		success_msg = f"✅ Dive {dive_number + 1} (no-audio - ffmpeg missing): {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
+		if progress_callback:
+			progress_callback.write(success_msg)
+		else:
+			print(success_msg)
+		return output_path
+	except Exception as e:
+		print(f"  ⚠️  Audio preservation failed: {e}")
+		if os.path.exists(temp_output_path):
+			os.rename(temp_output_path, output_path)
+		success_msg = f"✅ Dive {dive_number + 1} (no-audio - error): {output_filename} ({extracted_frames} frames, {duration:.1f}s)"
+		if progress_callback:
+			progress_callback.write(success_msg)
+		else:
+			print(success_msg)
+		return output_path
 
 def main():
 	"""Main execution function"""
@@ -2404,6 +2340,10 @@ Examples:
 	parser.add_argument('--post-duration', type=float, default=2.0,
 					   help='Seconds after splash to include')
 
+	# Small audio timing tweak
+	parser.add_argument('--audio-offset', type=float, default=0.0,
+				   help='Small audio offset in seconds to apply when combining (-0.1 to shift audio earlier, 0.1 to delay)')
+
 	# Debug options
 	parser.add_argument('--debug', action='store_true', help='Enable debug plots')
 	parser.add_argument('--debug-dir', default='debug_splash_detection',
@@ -2462,6 +2402,7 @@ Examples:
 		min_peak_distance=args.peak_distance,
 		pre_splash_duration=args.pre_duration,
 		post_splash_duration=args.post_duration,
+		audio_offset_seconds=args.audio_offset,
 		enable_debug_plots=args.debug,
 		debug_output_dir=args.debug_dir
 	)
