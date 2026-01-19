@@ -397,6 +397,7 @@ def detect_person_frames(
     force_cpu: bool = False,
     use_fp16: bool = False,
     batch_size: int = 16,
+    preload_model: bool = False,
 ) -> List[Tuple[float, bool, float]]:
     """
     Detect frames where person is present in video using batch inference.
@@ -409,6 +410,7 @@ def detect_person_frames(
         force_cpu: Force CPU usage (overrides use_gpu)
         use_fp16: Use FP16 half-precision (GPU only)
         batch_size: Number of frames to process in batch (16-32 recommended)
+        preload_model: Warm up GPU/model before processing (reduces first-frame latency)
 
     Returns:
         List of (timestamp, person_present, confidence)
@@ -427,6 +429,10 @@ def detect_person_frames(
         force_cpu=force_cpu,
         use_fp16=use_fp16,
     )
+
+    # Warm up model if requested
+    if preload_model:
+        warmup_model(model, num_warmup_frames=10)
 
     # Open video
     cap = cv2.VideoCapture(video_path)
@@ -735,3 +741,23 @@ def clear_model_cache() -> None:
     _model_cache = None
     _gpu_info_cache = None
     _opt_info_cache = None
+
+
+def warmup_model(model: Any, num_warmup_frames: int = 10) -> None:
+    """
+    Warm up GPU/model with dummy inference to reduce first-frame latency.
+
+    Args:
+        model: YOLO model instance
+        num_warmup_frames: Number of dummy frames to process
+    """
+    try:
+        # Create dummy frames with same size
+        dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        dummy_frames = [dummy_frame] * num_warmup_frames
+
+        # Run dummy inference
+        model.predict(dummy_frames, verbose=False)
+    except Exception as e:
+        # Warmup failures are not critical
+        pass
