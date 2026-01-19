@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diveanalyzer"
+version = "2.0.0"
+description = "Automatic diving video clip extraction using audio and computer vision"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Maxime Cauchy", email = "macauchy@student.42.fr"}
+]
+
+keywords = [
+    "diving",
+    "video",
+    "extraction",
+    "computer-vision",
+    "audio",
+    "YOLO",
+    "sports",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+    "av>=10.0.0",
+    "ultralytics>=8.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.65.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "pytest-cov>=4.1.0",
+]
+
+motion = [
+    "scenedetect[opencv]>=0.6.0",
+]
+
+icloud = [
+    "pyicloud>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/maxime-c16/DiveAnalizer"
+Repository = "https://github.com/maxime-c16/DiveAnalizer"
+Issues = "https://github.com/maxime-c16/DiveAnalizer/issues"
+
+[project.scripts]
+diveanalyzer = "diveanalyzer.cli:main"
+
+[tool.setuptools]
+packages = ["diveanalyzer", "diveanalyzer.detection", "diveanalyzer.extraction", "diveanalyzer.storage", "diveanalyzer.utils"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 100
+target-version = ["py38"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "C",    # flake8-comprehensions
+]
+
+ignore = [
+    "E501",  # Line too long
+]

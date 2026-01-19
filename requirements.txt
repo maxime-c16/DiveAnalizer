@@ -1,3 +1,32 @@
-opencv-python
-mediapipe
-numpy
+# DiveAnalyzer v2.0 Dependencies
+
+# === Audio Processing ===
+librosa>=0.10.0              # Audio analysis, peak detection
+soundfile>=0.12.0            # Audio file I/O
+scipy>=1.10.0                # Signal processing (peak detection)
+
+# === Video Processing ===
+# Note: Choose ONE of the following video loaders
+# decord>=0.6.0              # Fast video loading (requires building from source for GPU)
+av>=10.0.0                   # PyAV - FFmpeg Python bindings
+
+# === Detection ===
+ultralytics>=8.0.0           # YOLO-nano for person detection
+torch>=2.0.0                 # PyTorch (required by ultralytics)
+torchvision>=0.15.0          # Torchvision
+
+# === Utilities ===
+numpy>=1.24.0                # Array operations
+tqdm>=4.65.0                 # Progress bars
+click>=8.1.0                 # CLI framework
+
+# === Optional: Scene Detection ===
+scenedetect[opencv]>=0.6.0   # PySceneDetect for motion analysis
+
+# === Optional: iCloud Integration ===
+# pyicloud>=1.0.0            # iCloud Drive API (uncomment if needed)
+
+# === Development Dependencies ===
+# pytest>=7.4.0              # Testing framework
+# black>=23.0.0              # Code formatter
+# ruff>=0.1.0                # Linter
