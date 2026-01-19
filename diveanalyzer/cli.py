@@ -37,6 +37,67 @@ def get_audio_functions():
         )
 
 
+def get_or_generate_proxy(video_path: str, proxy_height: int = 480, enable_cache: bool = True, verbose: bool = False):
+    """Get or generate 480p proxy for motion/person detection.
+
+    Returns the proxy path, or original video path if proxy not needed.
+
+    Args:
+        video_path: Path to source video
+        proxy_height: Proxy resolution height in pixels
+        enable_cache: Use cache system for proxy storage
+        verbose: Print progress
+
+    Returns:
+        Path to proxy video (or original if not needed)
+    """
+    import tempfile
+
+    # Check if proxy generation is recommended (only for large videos)
+    if not is_proxy_generation_needed(video_path, size_threshold_mb=500):
+        if verbose:
+            click.echo("    Video is small enough, skipping proxy generation")
+        return video_path
+
+    # Try to get cached proxy
+    if enable_cache:
+        cache = CacheManager()
+        cached_proxy = cache.get_proxy(video_path, height=proxy_height)
+        if cached_proxy:
+            if verbose:
+                click.echo(f"    ✓ Using cached proxy: {Path(cached_proxy).name}")
+            return cached_proxy
+
+    # Generate new proxy
+    if verbose:
+        click.echo(f"    Generating {proxy_height}p proxy...")
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp_proxy_path = tmp.name
+
+    try:
+        generate_proxy(video_path, tmp_proxy_path, height=proxy_height, verbose=verbose)
+
+        # Cache the proxy if caching enabled
+        if enable_cache:
+            cache = CacheManager()
+            proxy_path = cache.put_proxy(video_path, tmp_proxy_path, height=proxy_height)
+            if verbose:
+                proxy_size_mb = Path(proxy_path).stat().st_size / (1024 * 1024)
+                click.echo(f"    ✓ Cached proxy ({proxy_size_mb:.0f}MB)")
+            return proxy_path
+        else:
+            return tmp_proxy_path
+
+    except Exception as e:
+        if Path(tmp_proxy_path).exists():
+            try:
+                Path(tmp_proxy_path).unlink()
+            except:
+                pass
+        raise
+
+
 @click.group()
 @click.version_option(version=__version__)
 def cli():
@@ -188,17 +249,15 @@ def process(
         if enable_motion:
             click.echo("\n🎬 Phase 2: Motion-Based Validation...")
             try:
-                # Check if proxy generation is recommended
-                proxy_path = None
-                if is_proxy_generation_needed(video_path, size_threshold_mb=500):
-                    click.echo("  Generating 480p proxy for motion analysis...")
-                    proxy_path = f"/tmp/proxy_{Path(video_path).stem}.mp4"
-                    generate_proxy(video_path, proxy_path, height=proxy_height, verbose=verbose)
-                    motion_video = proxy_path
-                    click.echo(f"  ✓ Proxy generated: {proxy_path}")
-                else:
-                    motion_video = video_path
-                    click.echo("  Video is small enough, using original for motion detection")
+                # Get or generate proxy for motion detection (uses cache)
+                if verbose:
+                    click.echo("  Getting proxy for motion detection...")
+                motion_video = get_or_generate_proxy(
+                    video_path,
+                    proxy_height=proxy_height,
+                    enable_cache=enable_cache,
+                    verbose=verbose
+                )
 
                 click.echo("  Detecting motion bursts...")
                 motion_events = detect_motion_bursts(motion_video, sample_fps=5.0)
