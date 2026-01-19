@@ -151,14 +151,53 @@ def check_gpu_memory(model_size_mb: float, required_buffer_mb: float = 100.0) ->
     return True
 
 
+def _apply_fp16_quantization(model: Any, device_type: str) -> bool:
+    """
+    Apply FP16 half-precision quantization to model.
+
+    Args:
+        model: YOLO model instance
+        device_type: Type of device (cuda, metal, rocm, cpu)
+
+    Returns:
+        True if FP16 was successfully applied, False otherwise
+    """
+    if device_type not in ("cuda", "rocm"):
+        # FP16 only supported on NVIDIA/AMD GPUs
+        return False
+
+    try:
+        import torch
+
+        # Check if CUDA compute capability supports FP16
+        if device_type == "cuda":
+            if torch.cuda.is_available():
+                props = torch.cuda.get_device_properties(0)
+                # FP16 requires compute capability 5.3+
+                if props.major < 5 or (props.major == 5 and props.minor < 3):
+                    print(
+                        f"  ⚠️  GPU compute capability {props.major}.{props.minor} "
+                        f"does not support FP16 (requires 5.3+)"
+                    )
+                    return False
+
+        # Apply half-precision
+        model.model.half()
+        return True
+
+    except Exception as e:
+        print(f"  ⚠️  FP16 quantization failed: {e}")
+        return False
+
+
 def load_yolo_model(
     model_name: str = "yolov8n.pt",
     use_gpu: bool = False,
     force_cpu: bool = False,
     use_fp16: bool = False,
-) -> Tuple[Any, GPUInfo]:
+) -> Tuple[Any, GPUInfo, Dict[str, Any]]:
     """
-    Load YOLO-nano model for person detection with GPU support.
+    Load YOLO-nano model for person detection with GPU and FP16 support.
 
     Args:
         model_name: Model to use (yolov8n = nano, fastest)
@@ -167,7 +206,7 @@ def load_yolo_model(
         use_fp16: Use FP16 half-precision (GPU only)
 
     Returns:
-        Tuple of (YOLO model instance, GPUInfo)
+        Tuple of (YOLO model instance, GPUInfo, optimization_info dict)
     """
     try:
         from ultralytics import YOLO
@@ -181,6 +220,14 @@ def load_yolo_model(
     gpu_info = detect_gpu_device(force_cpu=force_cpu)
 
     model = YOLO(model_name)
+
+    # Optimization tracking
+    optimization_info: Dict[str, Any] = {
+        "device": "cpu",
+        "device_name": gpu_info.device_name,
+        "fp16_enabled": False,
+        "fp16_supported": False,
+    }
 
     # Configure device
     if use_gpu and gpu_info.device_type != "cpu":
@@ -196,33 +243,39 @@ def load_yolo_model(
                 device = "cpu"
 
             model.to(device)
+            optimization_info["device"] = device
 
-            # Apply FP16 if requested
-            if use_fp16 and gpu_info.device_type in ("cuda", "rocm"):
-                try:
-                    import torch
+            # Check FP16 support
+            optimization_info["fp16_supported"] = gpu_info.device_type in ("cuda", "rocm")
 
-                    model.model.half()
-                    print(f"  FP16 enabled on {gpu_info.device_name}")
-                except Exception as e:
-                    print(f"  ⚠️  FP16 failed: {e}, using FP32")
+            # Apply FP16 if requested and supported
+            if use_fp16 and optimization_info["fp16_supported"]:
+                if _apply_fp16_quantization(model, gpu_info.device_type):
+                    optimization_info["fp16_enabled"] = True
+                    print(f"  FP16: Enabled (half-precision quantization)")
+                else:
+                    print(f"  FP16: Not supported on this GPU, using FP32")
 
-            print(f"  GPU: {gpu_info.device_name}")
-            print(f"  Memory: {gpu_info.available_memory_mb:.0f}MB available")
+            print(f"  Device: {gpu_info.device_name}")
+            if gpu_info.total_memory_mb > 0:
+                print(f"  Memory: {gpu_info.available_memory_mb:.0f}MB available")
 
         except Exception as e:
             print(f"⚠️  Failed to load on GPU: {e}")
             print("  Falling back to CPU")
             model.to("cpu")
             gpu_info = detect_gpu_device(force_cpu=True)
+            optimization_info["device"] = "cpu"
+            optimization_info["device_name"] = gpu_info.device_name
     else:
         model.to("cpu")
+        optimization_info["device"] = "cpu"
         if force_cpu:
-            print("  GPU: CPU (forced)")
+            print("  Device: CPU (forced)")
         elif use_gpu:
-            print("  GPU: CPU (no GPU available)")
+            print("  Device: CPU (no GPU available)")
 
-    return model, gpu_info
+    return model, gpu_info, optimization_info
 
 
 def detect_person_frames(
@@ -258,7 +311,7 @@ def detect_person_frames(
     batch_size = max(1, min(batch_size, 64))  # Clamp between 1-64
 
     # Load YOLO model with GPU support
-    model, gpu_info = load_yolo_model(
+    model, gpu_info, opt_info = load_yolo_model(
         use_gpu=use_gpu,
         force_cpu=force_cpu,
         use_fp16=use_fp16,
@@ -541,9 +594,12 @@ def get_person_presence_percentage(
 # Module-level model cache
 _model_cache = None
 _gpu_info_cache = None
+_opt_info_cache = None
 
 
-def get_cached_yolo_model(use_gpu: bool = False, force_cpu: bool = False) -> Tuple[Any, GPUInfo]:
+def get_cached_yolo_model(
+    use_gpu: bool = False, force_cpu: bool = False
+) -> Tuple[Any, GPUInfo, Dict[str, Any]]:
     """
     Get or create cached YOLO model.
 
@@ -552,16 +608,19 @@ def get_cached_yolo_model(use_gpu: bool = False, force_cpu: bool = False) -> Tup
         force_cpu: Force CPU usage
 
     Returns:
-        Tuple of (YOLO model instance, GPUInfo)
+        Tuple of (YOLO model instance, GPUInfo, optimization_info)
     """
-    global _model_cache, _gpu_info_cache
+    global _model_cache, _gpu_info_cache, _opt_info_cache
     if _model_cache is None:
-        _model_cache, _gpu_info_cache = load_yolo_model(use_gpu=use_gpu, force_cpu=force_cpu)
-    return _model_cache, _gpu_info_cache
+        _model_cache, _gpu_info_cache, _opt_info_cache = load_yolo_model(
+            use_gpu=use_gpu, force_cpu=force_cpu
+        )
+    return _model_cache, _gpu_info_cache, _opt_info_cache
 
 
 def clear_model_cache() -> None:
     """Clear cached YOLO model."""
-    global _model_cache, _gpu_info_cache
+    global _model_cache, _gpu_info_cache, _opt_info_cache
     _model_cache = None
     _gpu_info_cache = None
+    _opt_info_cache = None
