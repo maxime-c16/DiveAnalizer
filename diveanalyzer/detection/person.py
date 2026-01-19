@@ -232,9 +232,10 @@ def detect_person_frames(
     use_gpu: bool = False,
     force_cpu: bool = False,
     use_fp16: bool = False,
+    batch_size: int = 16,
 ) -> List[Tuple[float, bool, float]]:
     """
-    Detect frames where person is present in video.
+    Detect frames where person is present in video using batch inference.
 
     Args:
         video_path: Path to video file
@@ -243,6 +244,7 @@ def detect_person_frames(
         use_gpu: Use GPU for inference
         force_cpu: Force CPU usage (overrides use_gpu)
         use_fp16: Use FP16 half-precision (GPU only)
+        batch_size: Number of frames to process in batch (16-32 recommended)
 
     Returns:
         List of (timestamp, person_present, confidence)
@@ -251,6 +253,9 @@ def detect_person_frames(
 
     if not Path(video_path).exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
+
+    # Validate batch size
+    batch_size = max(1, min(batch_size, 64))  # Clamp between 1-64
 
     # Load YOLO model with GPU support
     model, gpu_info = load_yolo_model(
@@ -274,50 +279,110 @@ def detect_person_frames(
     frame_count = 0
     sampled_count = 0
 
+    # Frame batching state
+    frame_batch: List[Tuple[int, np.ndarray]] = []  # (frame_count, frame)
+    timestamp_batch: List[float] = []
+
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
+                # Process remaining frames in batch
+                if frame_batch:
+                    _process_frame_batch(
+                        model,
+                        frame_batch,
+                        timestamp_batch,
+                        confidence_threshold,
+                        fps,
+                        results,
+                    )
                 break
 
             # Sample at desired FPS
             if frame_count % frame_step == 0:
-                # Get timestamp
-                timestamp = frame_count / fps
-
-                # Run YOLO inference
-                yolo_results = model.predict(frame, verbose=False)
-
-                # Check for person class (class 0 in COCO)
-                person_detected = False
-                max_confidence = 0.0
-
-                for result in yolo_results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            class_id = int(box.cls)
-                            conf = float(box.conf)
-
-                            # COCO class 0 = person
-                            if class_id == 0 and conf > max_confidence:
-                                max_confidence = conf
-                                if conf > confidence_threshold:
-                                    person_detected = True
-
-                results.append((timestamp, person_detected, max_confidence))
+                # Add to batch
+                frame_batch.append((frame_count, frame))
+                timestamp_batch.append(frame_count / fps)
                 sampled_count += 1
+
+                # Process batch when full
+                if len(frame_batch) >= batch_size:
+                    _process_frame_batch(
+                        model,
+                        frame_batch,
+                        timestamp_batch,
+                        confidence_threshold,
+                        fps,
+                        results,
+                    )
+                    frame_batch = []
+                    timestamp_batch = []
 
             frame_count += 1
 
             # Progress indicator
-            if sampled_count % 10 == 0:
+            if sampled_count % (batch_size * 2) == 0:
                 progress = (frame_count / total_frames) * 100
-                print(f"  Person detection: {progress:.0f}% ({sampled_count} frames)")
+                print(
+                    f"  Person detection: {progress:.0f}% ({sampled_count} frames, "
+                    f"batch_size={batch_size})"
+                )
 
     finally:
         cap.release()
 
     return results
+
+
+def _process_frame_batch(
+    model: Any,
+    frame_batch: List[Tuple[int, np.ndarray]],
+    timestamp_batch: List[float],
+    confidence_threshold: float,
+    fps: float,
+    results: List[Tuple[float, bool, float]],
+) -> None:
+    """
+    Process a batch of frames through YOLO inference.
+
+    Args:
+        model: YOLO model instance
+        frame_batch: List of (frame_count, frame_array) tuples
+        timestamp_batch: List of timestamps corresponding to frames
+        confidence_threshold: Confidence threshold for person detection
+        fps: Video FPS for timestamp calculation
+        results: Output list to append results to
+    """
+    if not frame_batch:
+        return
+
+    # Extract just the images for batch prediction
+    images = [frame for _, frame in frame_batch]
+
+    # Run batch inference on all frames at once
+    yolo_results = model.predict(images, verbose=False)
+
+    # Process results for each frame
+    for (frame_count, _), timestamp, yolo_result in zip(
+        frame_batch, timestamp_batch, yolo_results
+    ):
+        # Check for person class (class 0 in COCO)
+        person_detected = False
+        max_confidence = 0.0
+
+        if yolo_result.boxes is not None:
+            for box in yolo_result.boxes:
+                class_id = int(box.cls)
+                conf = float(box.conf)
+
+                # COCO class 0 = person
+                if class_id == 0 and conf > max_confidence:
+                    max_confidence = conf
+                    if conf > confidence_threshold:
+                        person_detected = True
+
+        results.append((timestamp, person_detected, max_confidence))
 
 
 def find_person_transitions(

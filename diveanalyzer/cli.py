@@ -188,6 +188,12 @@ def cli():
     default=False,
     help="Use FP16 half-precision on GPU (faster, lower memory)",
 )
+@click.option(
+    "--batch-size",
+    type=int,
+    default=16,
+    help="Batch size for frame inference (16-32 recommended)",
+)
 def process(
     video_path: str,
     output: str,
@@ -202,6 +208,7 @@ def process(
     use_gpu: bool,
     force_cpu: bool,
     use_fp16: bool,
+    batch_size: int,
 ):
     """
     Process a video and extract all detected dives.
@@ -328,6 +335,7 @@ def process(
                     use_gpu=use_gpu,
                     force_cpu=force_cpu,
                     use_fp16=use_fp16,
+                    batch_size=batch_size,
                 )
 
                 # Smooth timeline to remove jitter
