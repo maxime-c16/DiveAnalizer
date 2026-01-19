@@ -44,6 +44,48 @@ class DetectionConfig:
     enable_proxy_cache: bool = True
     """Cache proxy video generation (Phase 2+)"""
 
+    # Motion detection parameters (Phase 2)
+    motion_enabled: bool = True
+    """Enable motion-based validation for dives"""
+
+    motion_sample_fps: float = 5.0
+    """Frames per second to sample for motion analysis"""
+
+    motion_threshold_percentile: float = 80.0
+    """Percentile above which motion triggers burst"""
+
+    motion_min_burst_duration: float = 0.5
+    """Minimum motion burst duration in seconds"""
+
+    motion_min_time_before_splash: float = 2.0
+    """Minimum time before splash to look for motion"""
+
+    motion_max_time_before_splash: float = 12.0
+    """Maximum time before splash to look for motion"""
+
+    # Proxy parameters (Phase 2)
+    proxy_height: int = 480
+    """Proxy video height in pixels"""
+
+    proxy_preset: str = "ultrafast"
+    """FFmpeg encoding preset (ultrafast, superfast, veryfast, faster)"""
+
+    proxy_crf: int = 28
+    """Quality setting (0-51, lower = better)"""
+
+    proxy_min_video_size_mb: float = 500.0
+    """Only generate proxy for videos larger than this"""
+
+    # Signal fusion parameters (Phase 2)
+    confidence_audio_only: float = 0.3
+    """Confidence for audio-only detection"""
+
+    confidence_audio_motion: float = 0.6
+    """Confidence for audio + motion detection"""
+
+    confidence_all_signals: float = 0.9
+    """Confidence for audio + motion + person detection"""
+
     # Output parameters
     preserve_audio: bool = True
     """Include audio in extracted clips"""

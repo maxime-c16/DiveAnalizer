@@ -1,11 +1,15 @@
 """
 Signal fusion module - combines multiple detection signals into dive events.
 
-In Phase 1, only audio is used. Future phases will add motion and person detection.
+Phase 1: Audio-based detection only
+Phase 2: Audio + motion-based validation
+Phase 3: Audio + motion + person detection
+
+Uses weighted combination of signals for improved accuracy.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -157,3 +161,92 @@ def filter_dives_by_confidence(
         Filtered list of dives
     """
     return [d for d in dives if d.confidence >= min_confidence]
+
+
+def fuse_signals_audio_motion(
+    audio_peaks: List[Tuple[float, float]],
+    motion_events: List[Tuple[float, float, float]],
+    pre_splash_buffer: float = 10.0,
+    post_splash_buffer: float = 3.0,
+    motion_min_time_before: float = 2.0,
+    motion_max_time_before: float = 12.0,
+    confidence_audio_only: float = 0.3,
+    confidence_audio_motion: float = 0.6,
+) -> List[DiveEvent]:
+    """
+    Fuse audio and motion signals into dive events (Phase 2).
+
+    Algorithm:
+    1. For each audio peak (potential splash):
+       - Search for motion activity 2-12 seconds before splash
+       - If motion found nearby: confidence = 0.6 (audio + motion)
+       - If motion NOT found: confidence = 0.3 (audio only, lower confidence)
+    2. Return all detections with assigned confidence scores
+
+    Args:
+        audio_peaks: List of (timestamp, amplitude) from audio detection
+        motion_events: List of (start, end, intensity) from motion detection
+        pre_splash_buffer: Seconds before splash to include
+        post_splash_buffer: Seconds after splash to include
+        motion_min_time_before: Minimum time before splash to look for motion (seconds)
+        motion_max_time_before: Maximum time before splash to look for motion (seconds)
+        confidence_audio_only: Base confidence when only audio signal present
+        confidence_audio_motion: Confidence when both audio and motion signals present
+
+    Returns:
+        List of DiveEvent objects with fused confidence scores
+
+    Example:
+        >>> audio_peaks = [(4.5, -12), (15.2, -18)]
+        >>> motion_events = [(2.1, 4.8, 50), (12.5, 15.0, 45)]
+        >>> dives = fuse_signals_audio_motion(audio_peaks, motion_events)
+        >>> for dive in dives:
+        ...     print(f"{dive}: confidence {dive.confidence:.1%}")
+    """
+    if not audio_peaks:
+        return []
+
+    dives = []
+
+    for idx, (splash_time, amplitude) in enumerate(audio_peaks, 1):
+        # Normalize audio amplitude (assume -40dB to 0dB range)
+        normalized_amplitude = max(0.0, min(1.0, (amplitude + 40) / 40))
+
+        # Check for motion before splash
+        motion_match = None
+        motion_intensity = None
+
+        for motion_start, motion_end, intensity in motion_events:
+            # Check if motion ends within the time window before splash
+            time_before_splash = splash_time - motion_end
+
+            if motion_min_time_before <= time_before_splash <= motion_max_time_before:
+                motion_match = True
+                motion_intensity = intensity
+                break
+
+        # Calculate confidence based on signal fusion
+        if motion_match:
+            # Audio + Motion: higher confidence
+            confidence = confidence_audio_motion
+            # Boost by normalized amplitude
+            confidence = min(1.0, confidence + (normalized_amplitude * 0.2))
+        else:
+            # Audio only: lower confidence (Phase 1 level)
+            confidence = confidence_audio_only
+            confidence = 0.5 + (normalized_amplitude * 0.5)
+
+        dive = DiveEvent(
+            start_time=max(0.0, splash_time - pre_splash_buffer),
+            end_time=splash_time + post_splash_buffer,
+            splash_time=splash_time,
+            confidence=confidence,
+            audio_amplitude=amplitude,
+            motion_intensity=motion_intensity,
+            dive_number=idx,
+            notes="audio+motion" if motion_match else "audio only",
+        )
+
+        dives.append(dive)
+
+    return dives
