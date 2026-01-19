@@ -5,23 +5,169 @@ Phase 3: Person presence tracking in video for third validation signal.
 """
 
 import os
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 
-def load_yolo_model(model_name: str = "yolov8n.pt", use_gpu: bool = False):
+@dataclass
+class GPUInfo:
+    """Information about available GPU device."""
+
+    device_type: str  # 'cuda', 'metal', 'rocm', 'cpu'
+    device_index: int  # GPU device index (0 if CPU)
+    device_name: str  # Device name/description
+    total_memory_mb: float  # Total GPU memory in MB
+    available_memory_mb: float  # Available GPU memory in MB
+    is_available: bool  # Whether device is accessible
+
+
+def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
     """
-    Load YOLO-nano model for person detection.
+    Detect available GPU device (CUDA/Metal/ROCm) with fallback to CPU.
+
+    Args:
+        force_cpu: Force CPU usage even if GPU is available
+
+    Returns:
+        GPUInfo object with device details
+    """
+    if force_cpu:
+        return GPUInfo(
+            device_type="cpu",
+            device_index=0,
+            device_name="CPU (forced)",
+            total_memory_mb=0.0,
+            available_memory_mb=0.0,
+            is_available=True,
+        )
+
+    try:
+        import torch
+
+        # Check for NVIDIA CUDA
+        if torch.cuda.is_available():
+            device_index = 0  # Default to first GPU
+            device_name = torch.cuda.get_device_name(device_index)
+            total_memory = torch.cuda.get_device_properties(device_index).total_memory
+            total_memory_mb = total_memory / (1024 * 1024)
+
+            try:
+                available_memory = torch.cuda.mem_get_info(device_index)[0]
+                available_memory_mb = available_memory / (1024 * 1024)
+            except Exception:
+                available_memory_mb = total_memory_mb * 0.8  # Estimate
+
+            return GPUInfo(
+                device_type="cuda",
+                device_index=device_index,
+                device_name=f"NVIDIA {device_name}",
+                total_memory_mb=total_memory_mb,
+                available_memory_mb=available_memory_mb,
+                is_available=True,
+            )
+
+        # Check for Metal (Apple Silicon)
+        # Note: Metal support in PyTorch is via mps backend
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return GPUInfo(
+                device_type="metal",
+                device_index=0,
+                device_name="Apple Metal (MPS)",
+                total_memory_mb=0.0,  # Metal doesn't expose memory limits
+                available_memory_mb=0.0,
+                is_available=True,
+            )
+
+        # Check for ROCm (AMD)
+        try:
+            if torch.version.hip is not None:
+                device_index = 0
+                device_name = torch.cuda.get_device_name(device_index)
+                total_memory = torch.cuda.get_device_properties(device_index).total_memory
+                total_memory_mb = total_memory / (1024 * 1024)
+
+                try:
+                    available_memory = torch.cuda.mem_get_info(device_index)[0]
+                    available_memory_mb = available_memory / (1024 * 1024)
+                except Exception:
+                    available_memory_mb = total_memory_mb * 0.8
+
+                return GPUInfo(
+                    device_type="rocm",
+                    device_index=device_index,
+                    device_name=f"AMD ROCm {device_name}",
+                    total_memory_mb=total_memory_mb,
+                    available_memory_mb=available_memory_mb,
+                    is_available=True,
+                )
+        except Exception:
+            pass
+
+    except ImportError:
+        pass
+
+    # Fallback to CPU
+    return GPUInfo(
+        device_type="cpu",
+        device_index=0,
+        device_name="CPU (no GPU detected)",
+        total_memory_mb=0.0,
+        available_memory_mb=0.0,
+        is_available=True,
+    )
+
+
+def check_gpu_memory(model_size_mb: float, required_buffer_mb: float = 100.0) -> bool:
+    """
+    Check if GPU has sufficient memory for model and inference.
+
+    Args:
+        model_size_mb: Model size in MB
+        required_buffer_mb: Additional buffer needed in MB
+
+    Returns:
+        True if sufficient memory, False otherwise
+    """
+    gpu_info = detect_gpu_device()
+
+    if gpu_info.device_type == "cpu":
+        return True  # CPU memory checking not implemented
+
+    if gpu_info.device_type == "metal":
+        return True  # Metal doesn't expose memory limits
+
+    required_mb = model_size_mb + required_buffer_mb
+    if gpu_info.available_memory_mb < required_mb:
+        print(
+            f"⚠️  Insufficient GPU memory: {gpu_info.available_memory_mb:.0f}MB available, "
+            f"{required_mb:.0f}MB required"
+        )
+        return False
+
+    return True
+
+
+def load_yolo_model(
+    model_name: str = "yolov8n.pt",
+    use_gpu: bool = False,
+    force_cpu: bool = False,
+    use_fp16: bool = False,
+) -> Tuple[Any, GPUInfo]:
+    """
+    Load YOLO-nano model for person detection with GPU support.
 
     Args:
         model_name: Model to use (yolov8n = nano, fastest)
         use_gpu: Use GPU if available
+        force_cpu: Force CPU usage
+        use_fp16: Use FP16 half-precision (GPU only)
 
     Returns:
-        YOLO model instance
+        Tuple of (YOLO model instance, GPUInfo)
     """
     try:
         from ultralytics import YOLO
@@ -31,19 +177,52 @@ def load_yolo_model(model_name: str = "yolov8n.pt", use_gpu: bool = False):
     # Suppress YOLO verbose output
     os.environ["YOLO_VERBOSE"] = "False"
 
+    # Detect GPU
+    gpu_info = detect_gpu_device(force_cpu=force_cpu)
+
     model = YOLO(model_name)
 
     # Configure device
-    if use_gpu:
+    if use_gpu and gpu_info.device_type != "cpu":
         try:
-            model.to("cuda")
-        except Exception:
-            print("⚠️  GPU not available, falling back to CPU")
+            # Map device type to PyTorch device string
+            if gpu_info.device_type == "cuda":
+                device = f"cuda:{gpu_info.device_index}"
+            elif gpu_info.device_type == "metal":
+                device = "mps"
+            elif gpu_info.device_type == "rocm":
+                device = f"cuda:{gpu_info.device_index}"
+            else:
+                device = "cpu"
+
+            model.to(device)
+
+            # Apply FP16 if requested
+            if use_fp16 and gpu_info.device_type in ("cuda", "rocm"):
+                try:
+                    import torch
+
+                    model.model.half()
+                    print(f"  FP16 enabled on {gpu_info.device_name}")
+                except Exception as e:
+                    print(f"  ⚠️  FP16 failed: {e}, using FP32")
+
+            print(f"  GPU: {gpu_info.device_name}")
+            print(f"  Memory: {gpu_info.available_memory_mb:.0f}MB available")
+
+        except Exception as e:
+            print(f"⚠️  Failed to load on GPU: {e}")
+            print("  Falling back to CPU")
             model.to("cpu")
+            gpu_info = detect_gpu_device(force_cpu=True)
     else:
         model.to("cpu")
+        if force_cpu:
+            print("  GPU: CPU (forced)")
+        elif use_gpu:
+            print("  GPU: CPU (no GPU available)")
 
-    return model
+    return model, gpu_info
 
 
 def detect_person_frames(
@@ -51,6 +230,8 @@ def detect_person_frames(
     sample_fps: float = 5.0,
     confidence_threshold: float = 0.5,
     use_gpu: bool = False,
+    force_cpu: bool = False,
+    use_fp16: bool = False,
 ) -> List[Tuple[float, bool, float]]:
     """
     Detect frames where person is present in video.
@@ -60,6 +241,8 @@ def detect_person_frames(
         sample_fps: Frames per second to sample (lower = faster)
         confidence_threshold: YOLO confidence threshold (0.0-1.0)
         use_gpu: Use GPU for inference
+        force_cpu: Force CPU usage (overrides use_gpu)
+        use_fp16: Use FP16 half-precision (GPU only)
 
     Returns:
         List of (timestamp, person_present, confidence)
@@ -69,8 +252,12 @@ def detect_person_frames(
     if not Path(video_path).exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    # Load YOLO model
-    model = load_yolo_model(use_gpu=use_gpu)
+    # Load YOLO model with GPU support
+    model, gpu_info = load_yolo_model(
+        use_gpu=use_gpu,
+        force_cpu=force_cpu,
+        use_fp16=use_fp16,
+    )
 
     # Open video
     cap = cv2.VideoCapture(video_path)
@@ -288,17 +475,28 @@ def get_person_presence_percentage(
 
 # Module-level model cache
 _model_cache = None
+_gpu_info_cache = None
 
 
-def get_cached_yolo_model(use_gpu: bool = False):
-    """Get or create cached YOLO model."""
-    global _model_cache
+def get_cached_yolo_model(use_gpu: bool = False, force_cpu: bool = False) -> Tuple[Any, GPUInfo]:
+    """
+    Get or create cached YOLO model.
+
+    Args:
+        use_gpu: Use GPU if available
+        force_cpu: Force CPU usage
+
+    Returns:
+        Tuple of (YOLO model instance, GPUInfo)
+    """
+    global _model_cache, _gpu_info_cache
     if _model_cache is None:
-        _model_cache = load_yolo_model(use_gpu=use_gpu)
-    return _model_cache
+        _model_cache, _gpu_info_cache = load_yolo_model(use_gpu=use_gpu, force_cpu=force_cpu)
+    return _model_cache, _gpu_info_cache
 
 
-def clear_model_cache():
+def clear_model_cache() -> None:
     """Clear cached YOLO model."""
-    global _model_cache
+    global _model_cache, _gpu_info_cache
     _model_cache = None
+    _gpu_info_cache = None

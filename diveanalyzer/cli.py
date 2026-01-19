@@ -174,7 +174,19 @@ def cli():
     "--use-gpu",
     is_flag=True,
     default=False,
-    help="Use GPU for person detection (NVIDIA GPU required)",
+    help="Use GPU for person detection (NVIDIA/Apple/AMD GPU)",
+)
+@click.option(
+    "--force-cpu",
+    is_flag=True,
+    default=False,
+    help="Force CPU usage even if GPU is available",
+)
+@click.option(
+    "--use-fp16",
+    is_flag=True,
+    default=False,
+    help="Use FP16 half-precision on GPU (faster, lower memory)",
 )
 def process(
     video_path: str,
@@ -188,6 +200,8 @@ def process(
     proxy_height: int,
     enable_person: bool,
     use_gpu: bool,
+    force_cpu: bool,
+    use_fp16: bool,
 ):
     """
     Process a video and extract all detected dives.
@@ -312,6 +326,8 @@ def process(
                     sample_fps=5.0,
                     confidence_threshold=0.5,
                     use_gpu=use_gpu,
+                    force_cpu=force_cpu,
+                    use_fp16=use_fp16,
                 )
 
                 # Smooth timeline to remove jitter
