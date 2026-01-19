@@ -192,12 +192,20 @@ def run_phase2_benchmark(video_path: str, verbose: bool = False) -> dict:
     return results
 
 
-def run_phase3_benchmark(video_path: str, use_gpu: bool = False, verbose: bool = False) -> dict:
+def run_phase3_benchmark(
+    video_path: str,
+    use_gpu: bool = False,
+    use_fp16: bool = False,
+    batch_size: int = 16,
+    verbose: bool = False,
+) -> dict:
     """Run Phase 3 (audio+motion+person) benchmark."""
     print("\n" + "=" * 80)
     print("🎬 PHASE 3 BENCHMARK: Audio + Motion + Person Detection")
     print("=" * 80)
     print(f"GPU enabled: {use_gpu}")
+    print(f"FP16 enabled: {use_fp16}")
+    print(f"Batch size: {batch_size}")
 
     try:
         from diveanalyzer.detection.audio import extract_audio, detect_splash_peaks
@@ -260,15 +268,22 @@ def run_phase3_benchmark(video_path: str, use_gpu: bool = False, verbose: bool =
     # Person detection (NEW - Phase 3)
     print("\n5️⃣ Person Detection (on proxy)...")
     start = time.time()
-    person_timeline = detect_person_frames(
-        proxy_path,
-        sample_fps=5.0,
-        confidence_threshold=0.5,
-        use_gpu=use_gpu,
-    )
-    results["timings"]["person_detect"] = time.time() - start
-    print(f"   ✓ Sampled {len(person_timeline)} frames")
-    print(f"   ✓ Time: {results['timings']['person_detect']:.2f}s")
+    try:
+        person_timeline = detect_person_frames(
+            proxy_path,
+            sample_fps=5.0,
+            confidence_threshold=0.5,
+            use_gpu=use_gpu,
+            use_fp16=use_fp16,
+            batch_size=batch_size,
+        )
+        results["timings"]["person_detect"] = time.time() - start
+        print(f"   ✓ Sampled {len(person_timeline)} frames")
+        print(f"   ✓ Time: {results['timings']['person_detect']:.2f}s")
+    except Exception as e:
+        print(f"   ⚠️  Person detection error: {e}")
+        results["timings"]["person_detect"] = time.time() - start
+        person_timeline = []
 
     # Smooth timeline
     print("\n6️⃣ Timeline Smoothing...")
@@ -332,14 +347,22 @@ def run_phase3_benchmark(video_path: str, use_gpu: bool = False, verbose: bool =
 def main():
     """Run all benchmarks and compare."""
     if len(sys.argv) < 2:
-        print("Usage: python benchmark_all_phases.py <video.MOV> [--gpu]")
+        print("Usage: python benchmark_all_phases.py <video.MOV> [--gpu] [--fp16] [--batch-size N]")
         print("\nExample:")
         print("  python benchmark_all_phases.py IMG_6496.MOV")
         print("  python benchmark_all_phases.py IMG_6496.MOV --gpu")
+        print("  python benchmark_all_phases.py IMG_6496.MOV --gpu --fp16 --batch-size 32")
         sys.exit(1)
 
     video_path = sys.argv[1]
     use_gpu = "--gpu" in sys.argv
+    use_fp16 = "--fp16" in sys.argv
+    batch_size = 16
+
+    # Parse batch size if provided
+    for i, arg in enumerate(sys.argv):
+        if arg == "--batch-size" and i + 1 < len(sys.argv):
+            batch_size = int(sys.argv[i + 1])
 
     if not Path(video_path).exists():
         print(f"❌ Video not found: {video_path}")
@@ -360,7 +383,11 @@ def main():
     results = []
     results.append(run_phase1_benchmark(video_path))
     results.append(run_phase2_benchmark(video_path))
-    results.append(run_phase3_benchmark(video_path, use_gpu=use_gpu))
+    results.append(
+        run_phase3_benchmark(
+            video_path, use_gpu=use_gpu, use_fp16=use_fp16, batch_size=batch_size
+        )
+    )
 
     # Compare results
     print("\n" + "=" * 80)

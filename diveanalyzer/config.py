@@ -96,6 +96,38 @@ class DetectionConfig:
     verbose: bool = False
     """Print detailed processing information"""
 
+
+@dataclass
+class GPUConfig:
+    """Configuration for GPU acceleration."""
+
+    enabled: bool = True
+    """Enable GPU acceleration for person detection"""
+
+    device_type: str = "auto"
+    """GPU device type: 'auto', 'cuda', 'metal', 'rocm', or 'cpu'"""
+
+    device_index: int = 0
+    """GPU device index for multi-GPU systems"""
+
+    batch_size: int = 16
+    """Batch size for frame inference (16-32 recommended)"""
+
+    use_fp16: bool = False
+    """Use FP16 half-precision (reduces memory, speeds up inference)"""
+
+    preload_model: bool = False
+    """Warm up GPU/model before processing (reduces first-frame latency)"""
+
+    force_cpu: bool = False
+    """Force CPU usage even if GPU available"""
+
+    max_memory_mb: int = 4096
+    """Maximum GPU memory to use in MB"""
+
+    fallback_to_cpu: bool = True
+    """Automatically fallback to CPU on GPU failure or OOM"""
+
     @classmethod
     def from_dict(cls, config_dict: dict) -> "DetectionConfig":
         """Create config from dictionary."""
@@ -164,6 +196,7 @@ class Config:
         self.detection = DetectionConfig()
         self.cache = CacheConfig()
         self.icloud = iCloudConfig()
+        self.gpu = GPUConfig()
 
     @classmethod
     def from_file(cls, config_file: Path) -> "Config":
@@ -190,6 +223,7 @@ class Config:
                 "enabled": self.icloud.enabled,
                 "folder_name": self.icloud.folder_name,
             },
+            "gpu": vars(self.gpu),
         }
 
 
