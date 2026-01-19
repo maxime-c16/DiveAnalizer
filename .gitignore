@@ -1,3 +1,28 @@
 data/raw_videos/*
 data/pose_analysis/*
 .ruff_cache/
+
+# Video test files
+*.MOV
+*.mov
+*.mp4
+*.m4v
+
+# Test outputs
+test_output/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE and system
+.DS_Store
+*.egg-info/
+dist/
+build/
+.vscode/
+.idea/
