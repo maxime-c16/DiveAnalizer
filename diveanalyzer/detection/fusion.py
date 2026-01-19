@@ -257,3 +257,117 @@ def fuse_signals_audio_motion(
         dives.append(dive)
 
     return dives
+
+
+def fuse_signals_audio_motion_person(
+    audio_peaks: List[Tuple[float, float]],
+    motion_events: List[Tuple[float, float, float]],
+    person_departures: List[Tuple[float, float]],
+    pre_splash_buffer: float = 10.0,
+    post_splash_buffer: float = 3.0,
+    motion_min_time_before: float = 0.0,
+    motion_max_time_before: float = 15.0,
+    person_min_time_before: float = 0.0,
+    person_max_time_before: float = 15.0,
+    motion_validation_boost: float = 0.15,
+    person_validation_boost: float = 0.10,
+) -> List[DiveEvent]:
+    """
+    Fuse audio, motion, and person signals into dive events (Phase 3).
+
+    Algorithm:
+    1. For each audio peak (potential splash):
+       - Use audio amplitude as base confidence
+       - Search for motion activity 0-15 seconds before splash
+       - Search for person departure 0-15 seconds before splash
+       - Apply boosts for each matching validation signal
+       - Final confidence = min(base + boosts, 1.0)
+
+    Validation Levels:
+    - 3-signal: Audio + Motion + Person (0.95-0.99 confidence)
+    - 2-signal: Audio + (Motion OR Person) (0.90-0.95 confidence)
+    - Audio-only: No motion/person signals (0.75-0.90 confidence)
+
+    Args:
+        audio_peaks: List of (timestamp, amplitude) from audio detection
+        motion_events: List of (start, end, intensity) from motion detection
+        person_departures: List of (timestamp, confidence) from person detection
+        pre_splash_buffer: Seconds before splash to include
+        post_splash_buffer: Seconds after splash to include
+        motion_min_time_before: Minimum time before splash to look for motion
+        motion_max_time_before: Maximum time before splash to look for motion
+        person_min_time_before: Minimum time before splash to look for person departure
+        person_max_time_before: Maximum time before splash to look for person departure
+        motion_validation_boost: Confidence boost for motion validation (+0.15)
+        person_validation_boost: Confidence boost for person validation (+0.10)
+
+    Returns:
+        List of DiveEvent objects with three-signal confidence scores
+    """
+    if not audio_peaks:
+        return []
+
+    dives = []
+
+    for idx, (splash_time, amplitude) in enumerate(audio_peaks, 1):
+        # Normalize audio amplitude
+        normalized_amplitude = max(0.0, min(1.0, (amplitude + 40) / 40))
+
+        # Audio confidence (base signal)
+        audio_confidence = 0.5 + (normalized_amplitude * 0.5)
+
+        # Check for motion before splash
+        motion_match = False
+        motion_intensity = None
+
+        for motion_start, motion_end, intensity in motion_events:
+            time_before_splash = splash_time - motion_end
+            if motion_min_time_before <= time_before_splash <= motion_max_time_before:
+                motion_match = True
+                motion_intensity = intensity
+                break
+
+        # Check for person departure before splash
+        person_match = False
+        person_departure_time = None
+
+        for dep_time, dep_confidence in person_departures:
+            time_before_splash = splash_time - dep_time
+            if person_min_time_before <= time_before_splash <= person_max_time_before:
+                person_match = True
+                person_departure_time = dep_time
+                break
+
+        # Calculate final confidence with boosts
+        confidence = audio_confidence
+
+        if motion_match:
+            confidence = min(1.0, confidence + motion_validation_boost)
+
+        if person_match:
+            confidence = min(1.0, confidence + person_validation_boost)
+
+        # Determine validation level
+        validation_count = sum([motion_match, person_match])
+        if validation_count == 2:
+            signal_type = "3-signal"
+        elif validation_count == 1:
+            signal_type = "2-signal"
+        else:
+            signal_type = "audio-only"
+
+        dive = DiveEvent(
+            start_time=max(0.0, splash_time - pre_splash_buffer),
+            end_time=splash_time + post_splash_buffer,
+            splash_time=splash_time,
+            confidence=confidence,
+            audio_amplitude=amplitude,
+            motion_intensity=motion_intensity,
+            had_person=person_match,
+            dive_number=idx,
+            notes=signal_type,
+        )
+
+        dives.append(dive)
+
+    return dives

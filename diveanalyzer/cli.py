@@ -16,6 +16,7 @@ from .config import get_config, DetectionConfig
 from .detection.fusion import (
     fuse_signals_audio_only,
     fuse_signals_audio_motion,
+    fuse_signals_audio_motion_person,
     merge_overlapping_dives,
     filter_dives_by_confidence,
 )
@@ -163,6 +164,18 @@ def cli():
     default=480,
     help="Proxy video height for motion detection (480, 360, 240)",
 )
+@click.option(
+    "--enable-person",
+    is_flag=True,
+    default=False,
+    help="Enable Phase 3 person detection (requires ultralytics)",
+)
+@click.option(
+    "--use-gpu",
+    is_flag=True,
+    default=False,
+    help="Use GPU for person detection (NVIDIA GPU required)",
+)
 def process(
     video_path: str,
     output: str,
@@ -173,6 +186,8 @@ def process(
     enable_motion: bool,
     enable_cache: bool,
     proxy_height: int,
+    enable_person: bool,
+    use_gpu: bool,
 ):
     """
     Process a video and extract all detected dives.
@@ -276,10 +291,70 @@ def process(
                 click.echo(f"  ⚠️  Motion detection failed: {e}")
                 enable_motion = False
 
-        # Phase 3: Fuse signals
+        # Phase 3: Person detection (optional)
+        person_departures = []
+        if enable_person:
+            click.echo("\n👤 Phase 3: Person Detection & Validation...")
+            try:
+                from .detection.person import (
+                    detect_person_frames,
+                    smooth_person_timeline,
+                    find_person_zone_departures,
+                )
+
+                # Use same proxy as motion detection
+                person_video = motion_video if enable_motion else video_path
+
+                if verbose:
+                    click.echo("  Detecting person frames...")
+                person_timeline = detect_person_frames(
+                    person_video,
+                    sample_fps=5.0,
+                    confidence_threshold=0.5,
+                    use_gpu=use_gpu,
+                )
+
+                # Smooth timeline to remove jitter
+                person_timeline = smooth_person_timeline(person_timeline, window_size=2)
+
+                # Find zone departures (potential dive starts)
+                click.echo("  Finding person zone departures...")
+                person_departures = find_person_zone_departures(
+                    person_timeline,
+                    min_absence_duration=0.5,
+                )
+
+                click.echo(f"  ✓ Found {len(person_departures)} person departures")
+
+                if verbose and person_departures:
+                    click.echo("    Person departures (first 5):")
+                    for i, (dep_time, dep_conf) in enumerate(person_departures[:5], 1):
+                        click.echo(
+                            f"      {i}. {dep_time:7.2f}s (confidence {dep_conf:.1%})"
+                        )
+
+            except ImportError:
+                click.echo("  ⚠️  ultralytics not installed. Skipping person detection.")
+                click.echo("     Install with: pip install ultralytics")
+                enable_person = False
+            except Exception as e:
+                click.echo(f"  ⚠️  Person detection failed: {e}")
+                if verbose:
+                    import traceback
+
+                    traceback.print_exc()
+                enable_person = False
+
+        # Phase 4: Fuse signals
         click.echo("\n🔗 Fusing detection signals...")
         try:
-            if enable_motion and motion_events:
+            if enable_person and person_departures:
+                # Phase 3: Audio + Motion + Person fusion
+                dives = fuse_signals_audio_motion_person(
+                    peaks, motion_events, person_departures
+                )
+                signal_type = "audio + motion + person"
+            elif enable_motion and motion_events:
                 # Phase 2: Audio + Motion fusion
                 dives = fuse_signals_audio_motion(peaks, motion_events)
                 signal_type = "audio + motion"
@@ -304,7 +379,14 @@ def process(
                 dives = dives_filtered
 
             # Statistics
-            if enable_motion and motion_events:
+            if enable_person and person_departures:
+                three_signal = sum(1 for d in dives if d.notes == "3-signal")
+                two_signal = sum(1 for d in dives if d.notes == "2-signal")
+                audio_only = sum(1 for d in dives if d.notes == "audio-only")
+                click.echo(f"  ├─ 3-signal (audio+motion+person): {three_signal}")
+                click.echo(f"  ├─ 2-signal (audio+motion/person): {two_signal}")
+                click.echo(f"  └─ Audio-only: {audio_only}")
+            elif enable_motion and motion_events:
                 validated = sum(1 for d in dives if d.notes == "audio+motion")
                 click.echo(f"  └─ Motion validated: {validated}/{len(dives)}")
 
