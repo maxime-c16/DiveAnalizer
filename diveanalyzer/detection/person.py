@@ -25,12 +25,13 @@ class GPUInfo:
     is_available: bool  # Whether device is accessible
 
 
-def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
+def detect_gpu_device(force_cpu: bool = False, device_index: int = 0) -> GPUInfo:
     """
     Detect available GPU device (CUDA/Metal/ROCm) with fallback to CPU.
 
     Args:
         force_cpu: Force CPU usage even if GPU is available
+        device_index: GPU device index to use (default 0, first GPU)
 
     Returns:
         GPUInfo object with device details
@@ -50,7 +51,10 @@ def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
 
         # Check for NVIDIA CUDA
         if torch.cuda.is_available():
-            device_index = 0  # Default to first GPU
+            device_count = torch.cuda.device_count()
+            # Clamp device_index to available devices
+            device_index = min(device_index, device_count - 1)
+
             device_name = torch.cuda.get_device_name(device_index)
             total_memory = torch.cuda.get_device_properties(device_index).total_memory
             total_memory_mb = total_memory / (1024 * 1024)
@@ -64,7 +68,7 @@ def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
             return GPUInfo(
                 device_type="cuda",
                 device_index=device_index,
-                device_name=f"NVIDIA {device_name}",
+                device_name=f"NVIDIA {device_name} (GPU {device_index})",
                 total_memory_mb=total_memory_mb,
                 available_memory_mb=available_memory_mb,
                 is_available=True,
@@ -85,7 +89,7 @@ def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
         # Check for ROCm (AMD)
         try:
             if torch.version.hip is not None:
-                device_index = 0
+                device_index = min(device_index, torch.cuda.device_count() - 1)
                 device_name = torch.cuda.get_device_name(device_index)
                 total_memory = torch.cuda.get_device_properties(device_index).total_memory
                 total_memory_mb = total_memory / (1024 * 1024)
@@ -99,7 +103,7 @@ def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
                 return GPUInfo(
                     device_type="rocm",
                     device_index=device_index,
-                    device_name=f"AMD ROCm {device_name}",
+                    device_name=f"AMD ROCm {device_name} (GPU {device_index})",
                     total_memory_mb=total_memory_mb,
                     available_memory_mb=available_memory_mb,
                     is_available=True,
@@ -119,6 +123,111 @@ def detect_gpu_device(force_cpu: bool = False) -> GPUInfo:
         available_memory_mb=0.0,
         is_available=True,
     )
+
+
+def get_available_gpu_count() -> int:
+    """
+    Get number of available GPUs.
+
+    Returns:
+        Number of available GPUs (0 if none available)
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return torch.cuda.device_count()
+
+        # Metal (Apple) - single GPU
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return 1
+
+        # ROCm
+        if hasattr(torch, "version") and hasattr(torch.version, "hip") and torch.version.hip is not None:
+            return torch.cuda.device_count()
+
+    except ImportError:
+        pass
+
+    return 0
+
+
+def get_all_gpu_devices() -> List[GPUInfo]:
+    """
+    Get information about all available GPU devices.
+
+    Returns:
+        List of GPUInfo objects for all available GPUs
+    """
+    gpu_list: List[GPUInfo] = []
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            for i in range(device_count):
+                gpu_info = detect_gpu_device(device_index=i)
+                gpu_list.append(gpu_info)
+            return gpu_list
+
+        # Metal (single GPU)
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            gpu_list.append(
+                GPUInfo(
+                    device_type="metal",
+                    device_index=0,
+                    device_name="Apple Metal (MPS)",
+                    total_memory_mb=0.0,
+                    available_memory_mb=0.0,
+                    is_available=True,
+                )
+            )
+            return gpu_list
+
+    except ImportError:
+        pass
+
+    # Return CPU as fallback
+    gpu_list.append(
+        GPUInfo(
+            device_type="cpu",
+            device_index=0,
+            device_name="CPU (no GPU detected)",
+            total_memory_mb=0.0,
+            available_memory_mb=0.0,
+            is_available=True,
+        )
+    )
+
+    return gpu_list
+
+
+def get_best_gpu_device(max_memory_mb: Optional[float] = None) -> GPUInfo:
+    """
+    Get the best available GPU device (with most available memory).
+
+    Args:
+        max_memory_mb: Maximum memory required (optional filter)
+
+    Returns:
+        GPUInfo for best available GPU device
+    """
+    gpu_list = get_all_gpu_devices()
+
+    # Filter by memory if specified
+    if max_memory_mb is not None:
+        gpu_list = [
+            g for g in gpu_list
+            if g.device_type == "cpu" or g.available_memory_mb >= max_memory_mb
+        ]
+
+    if not gpu_list:
+        # Fallback to CPU
+        return detect_gpu_device(force_cpu=True)
+
+    # Return GPU with most available memory
+    return max(gpu_list, key=lambda g: g.available_memory_mb)
 
 
 def check_gpu_memory(model_size_mb: float, required_buffer_mb: float = 100.0) -> bool:
@@ -195,6 +304,7 @@ def load_yolo_model(
     use_gpu: bool = False,
     force_cpu: bool = False,
     use_fp16: bool = False,
+    device_index: int = 0,
 ) -> Tuple[Any, GPUInfo, Dict[str, Any]]:
     """
     Load YOLO-nano model for person detection with GPU and FP16 support.
@@ -204,6 +314,7 @@ def load_yolo_model(
         use_gpu: Use GPU if available
         force_cpu: Force CPU usage
         use_fp16: Use FP16 half-precision (GPU only)
+        device_index: GPU device index for multi-GPU systems (default 0)
 
     Returns:
         Tuple of (YOLO model instance, GPUInfo, optimization_info dict)
@@ -217,7 +328,7 @@ def load_yolo_model(
     os.environ["YOLO_VERBOSE"] = "False"
 
     # Detect GPU
-    gpu_info = detect_gpu_device(force_cpu=force_cpu)
+    gpu_info = detect_gpu_device(force_cpu=force_cpu, device_index=device_index)
 
     model = YOLO(model_name)
 
