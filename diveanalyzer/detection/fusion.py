@@ -168,20 +168,26 @@ def fuse_signals_audio_motion(
     motion_events: List[Tuple[float, float, float]],
     pre_splash_buffer: float = 10.0,
     post_splash_buffer: float = 3.0,
-    motion_min_time_before: float = 2.0,
-    motion_max_time_before: float = 12.0,
-    confidence_audio_only: float = 0.3,
-    confidence_audio_motion: float = 0.6,
+    motion_min_time_before: float = 0.0,
+    motion_max_time_before: float = 15.0,
+    motion_validation_boost: float = 0.15,
 ) -> List[DiveEvent]:
     """
     Fuse audio and motion signals into dive events (Phase 2).
 
-    Algorithm:
+    Algorithm (Fixed):
     1. For each audio peak (potential splash):
-       - Search for motion activity 2-12 seconds before splash
-       - If motion found nearby: confidence = 0.6 (audio + motion)
-       - If motion NOT found: confidence = 0.3 (audio only, lower confidence)
-    2. Return all detections with assigned confidence scores
+       - Use audio amplitude as base confidence (Phase 1 method)
+       - Search for motion activity 0-15 seconds before splash (adaptive window)
+       - If motion found nearby: BOOST confidence by +15% (validation)
+       - If motion NOT found: KEEP audio confidence (don't penalize)
+    2. Return all detections with improved confidence scores
+
+    Key insight from Phase 2 testing:
+    - Audio is already excellent for clean recordings (0.82 avg confidence)
+    - Motion validation should BOOST, not REPLACE, audio confidence
+    - Wider window (0-15s) catches more dive approach patterns
+    - Don't penalize dives without visible motion (different diving styles)
 
     Args:
         audio_peaks: List of (timestamp, amplitude) from audio detection
@@ -190,15 +196,14 @@ def fuse_signals_audio_motion(
         post_splash_buffer: Seconds after splash to include
         motion_min_time_before: Minimum time before splash to look for motion (seconds)
         motion_max_time_before: Maximum time before splash to look for motion (seconds)
-        confidence_audio_only: Base confidence when only audio signal present
-        confidence_audio_motion: Confidence when both audio and motion signals present
+        motion_validation_boost: Confidence boost for motion-validated dives (+0.15 = +15%)
 
     Returns:
         List of DiveEvent objects with fused confidence scores
 
     Example:
         >>> audio_peaks = [(4.5, -12), (15.2, -18)]
-        >>> motion_events = [(2.1, 4.8, 50), (12.5, 15.0, 45)]
+        >>> motion_events = [(0.5, 4.8, 50), (12.5, 15.0, 45)]
         >>> dives = fuse_signals_audio_motion(audio_peaks, motion_events)
         >>> for dive in dives:
         ...     print(f"{dive}: confidence {dive.confidence:.1%}")
@@ -212,7 +217,10 @@ def fuse_signals_audio_motion(
         # Normalize audio amplitude (assume -40dB to 0dB range)
         normalized_amplitude = max(0.0, min(1.0, (amplitude + 40) / 40))
 
-        # Check for motion before splash
+        # Audio confidence (Phase 1 method - proven excellent)
+        audio_confidence = 0.5 + (normalized_amplitude * 0.5)
+
+        # Check for motion before splash (adaptive window)
         motion_match = None
         motion_intensity = None
 
@@ -225,16 +233,15 @@ def fuse_signals_audio_motion(
                 motion_intensity = intensity
                 break
 
-        # Calculate confidence based on signal fusion
+        # Final confidence: base audio confidence with optional motion boost
         if motion_match:
-            # Audio + Motion: higher confidence
-            confidence = confidence_audio_motion
-            # Boost by normalized amplitude
-            confidence = min(1.0, confidence + (normalized_amplitude * 0.2))
+            # Motion VALIDATES dive approach: boost confidence
+            confidence = min(1.0, audio_confidence + motion_validation_boost)
+            signal_type = "audio+motion"
         else:
-            # Audio only: lower confidence (Phase 1 level)
-            confidence = confidence_audio_only
-            confidence = 0.5 + (normalized_amplitude * 0.5)
+            # No motion detected: trust audio confidence
+            confidence = audio_confidence
+            signal_type = "audio only"
 
         dive = DiveEvent(
             start_time=max(0.0, splash_time - pre_splash_buffer),
@@ -244,7 +251,7 @@ def fuse_signals_audio_motion(
             audio_amplitude=amplitude,
             motion_intensity=motion_intensity,
             dive_number=idx,
-            notes="audio+motion" if motion_match else "audio only",
+            notes=signal_type,
         )
 
         dives.append(dive)

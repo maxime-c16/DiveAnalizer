@@ -13,13 +13,28 @@ from tqdm import tqdm
 
 from . import __version__
 from .config import get_config, DetectionConfig
-from .detection.audio import extract_audio, detect_splash_peaks
 from .detection.fusion import (
     fuse_signals_audio_only,
+    fuse_signals_audio_motion,
     merge_overlapping_dives,
     filter_dives_by_confidence,
 )
+from .detection.motion import detect_motion_bursts
 from .extraction.ffmpeg import extract_multiple_dives, get_video_duration, format_time
+from .extraction.proxy import generate_proxy, is_proxy_generation_needed
+from .storage.cache import CacheManager
+from .storage.icloud import find_icloud_videos
+
+# Lazy imports for audio (requires librosa)
+def get_audio_functions():
+    """Import audio functions on-demand to handle librosa dependency gracefully."""
+    try:
+        from .detection.audio import extract_audio, detect_splash_peaks
+        return extract_audio, detect_splash_peaks
+    except ImportError:
+        raise ImportError(
+            "librosa not installed. Install with: pip install librosa soundfile"
+        )
 
 
 @click.group()
@@ -69,6 +84,24 @@ def cli():
     default=False,
     help="Verbose output",
 )
+@click.option(
+    "--enable-motion",
+    is_flag=True,
+    default=False,
+    help="Enable Phase 2 motion-based validation (requires OpenCV)",
+)
+@click.option(
+    "--enable-cache",
+    is_flag=True,
+    default=True,
+    help="Cache audio and proxy files for reuse",
+)
+@click.option(
+    "--proxy-height",
+    type=int,
+    default=480,
+    help="Proxy video height for motion detection (480, 360, 240)",
+)
 def process(
     video_path: str,
     output: str,
@@ -76,15 +109,22 @@ def process(
     confidence: float,
     no_audio: bool,
     verbose: bool,
+    enable_motion: bool,
+    enable_cache: bool,
+    proxy_height: int,
 ):
     """
     Process a video and extract all detected dives.
 
-    VIDEO_PATH: Path to input video file (or iCloud folder)
+    VIDEO_PATH: Path to input video file
 
-    Example:
-        diveanalyzer process session.mp4 -o ./dives
-        diveanalyzer process ~/iCloud\\ Drive/Diving/ -c 0.7
+    Phase 1: Audio-based detection (always enabled)
+    Phase 2: Motion validation (optional, with --enable-motion)
+
+    Examples:
+        diveanalyzer process session.mov -o ./dives
+        diveanalyzer process session.mov -o ./dives --enable-motion
+        diveanalyzer process session.mov -c 0.7 --threshold -20
     """
     try:
         video_path = str(Path(video_path).resolve())
@@ -109,17 +149,24 @@ def process(
             click.echo(f"⚠️  Could not determine video length: {e}")
             duration = None
 
+        # Load audio functions
+        try:
+            extract_audio, detect_splash_peaks = get_audio_functions()
+        except ImportError as e:
+            click.echo(f"❌ {e}", err=True)
+            sys.exit(1)
+
         # Phase 1: Extract audio
         click.echo("\n🔊 Extracting audio track...")
         try:
             audio_path = extract_audio(video_path)
-            click.echo(f"✓ Audio extracted to: {audio_path}")
+            click.echo(f"✓ Audio extracted")
         except Exception as e:
             click.echo(f"❌ Failed to extract audio: {e}", err=True)
             sys.exit(1)
 
-        # Phase 2: Detect splash peaks
-        click.echo("\n🌊 Detecting splashes...")
+        # Phase 1: Detect splash peaks
+        click.echo("\n🌊 Detecting splashes (threshold {:.0f}dB)...".format(threshold))
         try:
             peaks = detect_splash_peaks(
                 audio_path,
@@ -127,7 +174,7 @@ def process(
                 min_distance_sec=5.0,
                 prominence=5.0,
             )
-            click.echo(f"✓ Found {len(peaks)} potential splashes")
+            click.echo(f"✓ Found {len(peaks)} splash peaks")
 
             if verbose:
                 for i, (time, amp) in enumerate(peaks, 1):
@@ -136,11 +183,53 @@ def process(
             click.echo(f"❌ Failed to detect splashes: {e}", err=True)
             sys.exit(1)
 
-        # Phase 3: Fuse signals (Phase 1: audio only)
+        # Phase 2: Motion detection (optional)
+        motion_events = []
+        if enable_motion:
+            click.echo("\n🎬 Phase 2: Motion-Based Validation...")
+            try:
+                # Check if proxy generation is recommended
+                proxy_path = None
+                if is_proxy_generation_needed(video_path, size_threshold_mb=500):
+                    click.echo("  Generating 480p proxy for motion analysis...")
+                    proxy_path = f"/tmp/proxy_{Path(video_path).stem}.mp4"
+                    generate_proxy(video_path, proxy_path, height=proxy_height, verbose=verbose)
+                    motion_video = proxy_path
+                    click.echo(f"  ✓ Proxy generated: {proxy_path}")
+                else:
+                    motion_video = video_path
+                    click.echo("  Video is small enough, using original for motion detection")
+
+                click.echo("  Detecting motion bursts...")
+                motion_events = detect_motion_bursts(motion_video, sample_fps=5.0)
+                click.echo(f"  ✓ Found {len(motion_events)} motion bursts")
+
+                if verbose and motion_events:
+                    click.echo("    Motion details (first 5):")
+                    for i, (start, end, intensity) in enumerate(motion_events[:5], 1):
+                        click.echo(f"      {i}. {start:7.2f}s - {end:7.2f}s (intensity {intensity:.1f})")
+
+            except ImportError:
+                click.echo("  ⚠️  OpenCV not installed. Skipping motion detection.")
+                click.echo("     Install with: pip install opencv-python")
+                enable_motion = False
+            except Exception as e:
+                click.echo(f"  ⚠️  Motion detection failed: {e}")
+                enable_motion = False
+
+        # Phase 3: Fuse signals
         click.echo("\n🔗 Fusing detection signals...")
         try:
-            dives = fuse_signals_audio_only(peaks)
-            click.echo(f"✓ Created {len(dives)} dive events")
+            if enable_motion and motion_events:
+                # Phase 2: Audio + Motion fusion
+                dives = fuse_signals_audio_motion(peaks, motion_events)
+                signal_type = "audio + motion"
+            else:
+                # Phase 1: Audio only
+                dives = fuse_signals_audio_only(peaks)
+                signal_type = "audio only"
+
+            click.echo(f"✓ Created {len(dives)} dive events ({signal_type})")
 
             # Merge overlapping dives
             dives_merged = merge_overlapping_dives(dives)
@@ -152,12 +241,20 @@ def process(
             dives_filtered = filter_dives_by_confidence(dives, min_confidence=confidence)
             if len(dives_filtered) < len(dives):
                 filtered_out = len(dives) - len(dives_filtered)
-                click.echo(f"⊘ Filtered {filtered_out} low-confidence dives")
+                click.echo(f"⊘ Filtered {filtered_out} low-confidence dives (confidence < {confidence})")
                 dives = dives_filtered
+
+            # Statistics
+            if enable_motion and motion_events:
+                validated = sum(1 for d in dives if d.notes == "audio+motion")
+                click.echo(f"  └─ Motion validated: {validated}/{len(dives)}")
 
             click.echo(f"✓ Final dive count: {len(dives)}")
         except Exception as e:
             click.echo(f"❌ Failed to fuse signals: {e}", err=True)
+            import traceback
+            if verbose:
+                traceback.print_exc()
             sys.exit(1)
 
         if not dives:
@@ -236,9 +333,11 @@ def detect(video_path: str, threshold: float, verbose: bool):
     Useful for tuning detection parameters.
     """
     try:
+        extract_audio, detect_splash_peaks = get_audio_functions()
+
         video_path = str(Path(video_path).resolve())
 
-        click.echo(f"🔍 Detecting dives in: {video_path}")
+        click.echo(f"🔍 Detecting dives in: {Path(video_path).name}")
 
         # Extract audio
         click.echo("Extracting audio...")
@@ -297,6 +396,100 @@ def analyze_audio(audio_path: str, threshold: float):
         click.echo(f"Found {len(peaks)} peaks:\n")
         for i, (time, amp) in enumerate(peaks, 1):
             click.echo(f"  {i:3d}. {time:7.2f}s  →  {amp:6.1f}dB")
+
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("video_path", type=click.Path(exists=True))
+@click.option(
+    "--sample-fps",
+    type=float,
+    default=5.0,
+    help="Frames per second to sample",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show detailed motion burst info",
+)
+def analyze_motion(video_path: str, sample_fps: float, verbose: bool):
+    """
+    Analyze motion patterns in a video.
+
+    Phase 2: Debug motion detection parameters.
+    """
+    try:
+        video_path = str(Path(video_path).resolve())
+
+        click.echo(f"🎬 Analyzing motion in: {Path(video_path).name}")
+        click.echo(f"   Sample rate: {sample_fps} FPS")
+
+        motion_events = detect_motion_bursts(video_path, sample_fps=sample_fps)
+
+        click.echo(f"\nFound {len(motion_events)} motion bursts:\n")
+
+        if motion_events:
+            total_motion_time = sum(end - start for start, end, _ in motion_events)
+            click.echo(f"Total motion time: {total_motion_time:.1f}s\n")
+
+            for i, (start, end, intensity) in enumerate(motion_events, 1):
+                duration = end - start
+                click.echo(
+                    f"  {i:3d}. {start:7.2f}s - {end:7.2f}s "
+                    f"({duration:5.2f}s)  intensity: {intensity:6.1f}"
+                )
+        else:
+            click.echo("No motion bursts detected. Try adjusting sample-fps or video.")
+
+    except ImportError:
+        click.echo("❌ OpenCV not installed. Install with: pip install opencv-python", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be deleted without deleting",
+)
+def clear_cache(dry_run: bool):
+    """
+    Clear the local cache.
+
+    Removes cached audio, proxy videos, and metadata (older than 7 days).
+    """
+    try:
+        from .storage.cleanup import cleanup_expired_cache
+
+        click.echo("🧹 Cache Cleanup")
+        click.echo("=" * 50)
+
+        if dry_run:
+            stats = cleanup_expired_cache(dry_run=True)
+            click.echo(f"\n Would delete {stats['expired_count']} expired entries")
+            click.echo("(Use without --dry-run to actually delete)")
+        else:
+            stats = cleanup_expired_cache()
+            click.echo(f"\n✓ Deleted {stats['expired_count']} expired entries")
+            click.echo(f"✓ Freed {stats['freed_size_mb']:.1f} MB")
+            click.echo(f"✓ {stats['entries_after']} active cache entries remaining")
+
+        # Show cache stats
+        cache = CacheManager()
+        cache_stats = cache.get_cache_stats()
+        click.echo(f"\nCache stats:")
+        click.echo(f"  Total size: {cache_stats['total_size_mb']:.1f} MB")
+        click.echo(f"  Total entries: {cache_stats['entry_count']}")
+        click.echo(f"  Cache dir: {cache_stats['cache_dir']}")
 
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
