@@ -392,6 +392,260 @@ Error Recovery Example:
 
 ---
 
+## Task 1.11: Adaptive Phase Selection Based on System Capabilities ⭐ CRITICAL
+
+**Description:** Implement intelligent runtime detection that automatically selects the optimal detection phase (1, 2, or 3) based on system hardware, avoiding poor performance tradeoffs on low-end machines. On a Mac with 8GB RAM and Intel i5, Phase 3 is 7x slower for only +4% accuracy gain—this ticket prevents users from experiencing slow, unusable systems.
+
+**Problem Statement:**
+- Phase 1 (Audio-only): 5s, 0.82 confidence
+- Phase 2 (Audio+Motion): 15s, 0.92 confidence
+- Phase 3 (Audio+Motion+Person): 350s on CPU-only machine, 0.96 confidence
+
+Without GPU, Phase 3 is a terrible tradeoff. Need to intelligently select Phase 2 on low-end systems and Phase 3 only on capable hardware.
+
+**Acceptance Criteria:**
+- System profiler detects: CPU cores, RAM, GPU availability (CUDA/Metal/ROCm)
+- Profiler estimates Phase 3 inference time before running full pipeline
+- If estimated Phase 3 time > threshold (e.g., >30s per 10min video), default to Phase 2 with clear warning
+- CLI flags to override: `--force-phase=1|2|3` and `--auto-select` (default)
+- Config file: `~/.diveanalyzer/auto_phase.yaml` stores profile results
+- Verbose output shows: system score, recommended phase, confidence/speed tradeoff
+- User can request full Phase 3 with `--force-phase=3` if they want accuracy over speed
+- Cache system profile for 7 days (recheck on demand with `--profile`)
+
+**Acceptance Criteria Examples:**
+
+```
+Scenario A: MacBook Pro i5, 8GB RAM, no GPU
+├─ System Score: 2/10
+├─ Detected: 4 cores @ 1.4GHz, 8GB RAM, no GPU
+├─ Phase 3 Estimate: 380s for 10-min video (too slow!)
+├─ Recommendation: PHASE 2 (15s, 0.92 confidence)
+├─ Output: ✓ Phase 2 selected for speed
+└─ Status: Ready to process, user can override with --force-phase=3
+
+Scenario B: MacBook Pro M3, 16GB RAM, Metal GPU
+├─ System Score: 8/10
+├─ Detected: 8 cores @ 3.2GHz, 16GB RAM, Metal GPU (8GB VRAM)
+├─ Phase 3 Estimate: 35s for 10-min video (GPU accelerated)
+├─ Recommendation: PHASE 3 (0.96 confidence, acceptable speed)
+├─ Output: ✓ Phase 3 selected for best accuracy
+└─ Status: Ready to process
+
+Scenario C: GPU Desktop (CUDA), 32GB RAM
+├─ System Score: 10/10
+├─ Detected: 16 cores, 32GB RAM, NVIDIA GPU (24GB VRAM)
+├─ Phase 3 Estimate: 8s for 10-min video (GPU optimized)
+├─ Recommendation: PHASE 3 (0.96 confidence, blazing fast)
+├─ Output: ✓ Phase 3 with full GPU acceleration
+└─ Status: Ready to process
+```
+
+**Test/Validation Strategy:**
+- Unit test system profiler on different configs (mock various CPU/RAM/GPU combinations)
+- Test phase selection logic: low-end → Phase 2, high-end → Phase 3
+- Integration test: full pipeline with auto-selection on real video
+- Verify Phase 2 output quality (0.92 confidence) on low-end systems
+- Verify Phase 3 runs successfully on capable systems
+- Test override flags: `--force-phase=1|2|3` works correctly
+- Test profile caching: second run uses cached profile, can refresh with `--profile`
+- Benchmark actual Phase 3 time on different machines, validate estimates
+- Edge case: Video with insufficient features (very short video, silent audio) falls back to Phase 1
+
+**Demo Output:**
+
+```
+System Profile (macOS Intel i5, 8GB RAM):
+├─ CPU: Quad-Core Intel i5 @ 1.4GHz
+├─ RAM: 8.0 GB
+├─ GPU: None (Intel Iris UHD 630 - not suitable for inference)
+├─ Storage: 450GB free
+├─ System Score: 2/10 (below Phase 3 minimum)
+│
+├─ Phase Timing Estimates (for 10-min video):
+│  ├─ Phase 1: 5s (0.82 confidence)
+│  ├─ Phase 2: 15s (0.92 confidence) ← RECOMMENDED
+│  └─ Phase 3: 380s ⚠️ (too slow without GPU)
+│
+├─ Decision: Using PHASE 2 for optimal speed/accuracy
+├─ Accuracy: 0.92 (92% confidence - excellent for production)
+├─ Speed: 15s processing + 3-5min extraction = 3-5min total
+│
+└─ Options:
+   • To use Phase 3 anyway: diveanalyzer video.mov --force-phase=3
+   • To use Phase 1 (fastest): diveanalyzer video.mov --force-phase=1
+   • To disable auto-selection: diveanalyzer video.mov --force-phase=2 (required every time)
+   • To view system profile: diveanalyzer --profile
+   • To update profile cache: diveanalyzer --profile --refresh
+```
+
+**Key Code Components:**
+
+```python
+# diveanalyzer/utils/system_profiler.py
+
+import platform
+import psutil
+import json
+from pathlib import Path
+from dataclasses import dataclass, asdict
+
+@dataclass
+class SystemProfile:
+    """System capabilities profile."""
+    cpu_count: int
+    cpu_freq_ghz: float
+    total_ram_gb: float
+    available_ram_gb: float
+    gpu_type: str  # 'cuda', 'metal', 'rocm', 'none'
+    gpu_memory_gb: float
+    system_score: int  # 0-10 scale
+    phase_3_estimate_sec: float  # Estimated Phase 3 time per 10-min video
+    recommended_phase: int  # 1, 2, or 3
+    profile_date: str
+
+def profile_system() -> SystemProfile:
+    """Profile current system capabilities."""
+    cpu_count = psutil.cpu_count(logical=False)
+    cpu_freq = psutil.cpu_freq().current / 1000.0  # GHz
+    total_ram = psutil.virtual_memory().total / (1024**3)  # GB
+    available_ram = psutil.virtual_memory().available / (1024**3)  # GB
+
+    # Detect GPU
+    gpu_type, gpu_memory = detect_gpu()
+
+    # Calculate system score (0-10)
+    score = calculate_system_score(cpu_count, cpu_freq, total_ram, gpu_type)
+
+    # Estimate Phase 3 processing time
+    phase_3_estimate = estimate_phase_3_time(cpu_count, cpu_freq, gpu_type)
+
+    # Recommend phase
+    if phase_3_estimate > 30:  # Too slow
+        recommended = 2  # Fall back to Phase 2
+    elif score >= 7:
+        recommended = 3  # Capable machine
+    else:
+        recommended = 2  # Safe middle ground
+
+    return SystemProfile(
+        cpu_count=cpu_count,
+        cpu_freq_ghz=cpu_freq,
+        total_ram_gb=total_ram,
+        available_ram_gb=available_ram,
+        gpu_type=gpu_type,
+        gpu_memory_gb=gpu_memory,
+        system_score=score,
+        phase_3_estimate_sec=phase_3_estimate,
+        recommended_phase=recommended,
+        profile_date=datetime.now().isoformat()
+    )
+
+def estimate_phase_3_time(cpu_count: int, cpu_freq: float, gpu_type: str) -> float:
+    """Estimate Phase 3 processing time for 10-min video."""
+    if gpu_type in ['cuda', 'metal', 'rocm']:
+        # GPU-accelerated: ~30-50s for 10min video
+        return 40.0
+    else:
+        # CPU-only: estimate based on system power
+        # Baseline: 350s for 4-core 1.4GHz CPU
+        cpu_power_index = (cpu_count / 4.0) * (cpu_freq / 1.4)
+        return 350.0 / cpu_power_index  # Scale linearly
+
+def calculate_system_score(cpu_count: int, cpu_freq: float,
+                          total_ram: float, gpu_type: str) -> int:
+    """Calculate 0-10 system capability score."""
+    score = 0
+
+    # CPU contribution (max 4 points)
+    cpu_power = cpu_count * cpu_freq / 5.6  # Normalized to 4-core @ 1.4GHz
+    score += min(4, int(cpu_power * 4))
+
+    # RAM contribution (max 3 points)
+    if total_ram >= 16:
+        score += 3
+    elif total_ram >= 8:
+        score += 2
+    else:
+        score += 1
+
+    # GPU contribution (max 3 points)
+    if gpu_type in ['cuda', 'rocm']:  # High-power GPUs
+        score += 3
+    elif gpu_type == 'metal':  # Apple Metal
+        score += 2
+    else:
+        score += 0
+
+    return min(10, score)
+
+# Integration in CLI
+def run_detection(video_path: str, args):
+    """Run detection with adaptive phase selection."""
+    config = get_config()
+
+    # Get system profile (cached or fresh)
+    profiler = SystemProfiler(cache_dir=config.cache.cache_dir)
+    profile = profiler.get_profile(refresh=args.profile_refresh)
+
+    # Determine phase
+    if args.force_phase:
+        phase = args.force_phase
+        print(f"⚠️  Forcing Phase {phase} (user override)")
+    else:
+        phase = profile.recommended_phase
+        print(f"✓ Auto-selected Phase {phase} based on system profile")
+        print(f"  Estimated time: {profile.phase_3_estimate_sec:.0f}s")
+        print(f"  Confidence: {get_phase_confidence(phase):.0%}")
+
+    # Configure detection for selected phase
+    config.detection.enable_motion = phase >= 2
+    config.detection.enable_person = phase >= 3
+
+    # Run detection
+    return detect_dives(video_path, config)
+```
+
+**Atomic Commits:**
+1. `feat: Add system profiler with CPU/RAM/GPU detection and capability scoring`
+2. `feat: Implement adaptive phase selection based on system capabilities`
+3. `feat: Add Phase 3 timing estimation and fallback to Phase 2 for low-end machines`
+4. `test: System profiler tests on multiple hardware configurations`
+5. `docs: System requirements and adaptive phase selection documentation`
+
+**Configuration Example:**
+```yaml
+# ~/.diveanalyzer/auto_phase.yaml (created after first profile)
+system_profile:
+  cpu_count: 4
+  cpu_freq_ghz: 1.4
+  total_ram_gb: 8.0
+  gpu_type: "none"
+  system_score: 2
+  recommended_phase: 2
+  phase_3_estimate_sec: 380
+  profile_date: "2026-01-20T15:30:00"
+
+auto_select: true
+min_phase_for_gpu: 3
+phase_2_threshold_sec: 30  # If Phase 3 > 30s, use Phase 2
+```
+
+**User Impact:**
+- **MacBook users**: Auto-select Phase 2, fast & accurate
+- **Desktop GPU users**: Auto-select Phase 3, highest accuracy
+- **Power users**: Can override with `--force-phase` for specific needs
+- **All users**: Informed decisions about accuracy/speed tradeoff
+
+**Success Metrics:**
+✓ Low-end machine users get usable performance (Phase 2, 0.92 confidence)
+✓ High-end users still get best accuracy (Phase 3, 0.96 confidence)
+✓ Auto-selection prevents 7x slowdowns on weak machines
+✓ Users understand the tradeoff clearly
+✓ Override flags allow flexibility
+
+---
+
 ## Sprint 1 Success Criteria
 
 ✓ Phase 3 inference time: 342s → <40s on GPU (8.5x speedup)
@@ -401,8 +655,17 @@ Error Recovery Example:
 ✓ Comprehensive benchmarks showing GPU advantage
 ✓ Error recovery for GPU failures
 ✓ Configuration system in place
+✓ **NEW: Adaptive phase selection (Task 1.11)**
+  - System profiler detects CPU/RAM/GPU capabilities
+  - Automatically selects Phase 2 on low-end machines (prevents 7x slowdown)
+  - Auto-selects Phase 3 on capable hardware
+  - User override flags for flexibility
+  - Users understand accuracy/speed tradeoffs clearly
 
-**Expected Output:** Phase 3 can process 8.4min video in <1 minute on GPU, <5 minutes on CPU with fallback
+**Expected Output:**
+- Phase 3 can process 8.4min video in <1 minute on GPU, <5 minutes on CPU with fallback
+- **NEW: Low-end machines automatically get Phase 2 (0.92 confidence, 15s) instead of unusable Phase 3 (350s)**
+- System profile shows: CPU/RAM/GPU, system score (0-10), recommended phase, timing estimates
 
 ---
 
@@ -988,6 +1251,10 @@ DiveAnalizer/
 │   │   └── fusion.py          # Multi-signal fusion (Sprint 5 updates)
 │   ├── cli.py                 # CLI entry point (all sprints)
 │   ├── config.py              # Configuration (Sprint 1 GPU config)
+│   ├── utils/                 # Utilities
+│   │   ├── __init__.py
+│   │   ├── system_profiler.py # NEW (Sprint 1.11) - System capability detection
+│   │   └── ...
 │   ├── queue/                 # NEW (Sprint 2)
 │   │   ├── job_queue.py
 │   │   └── worker.py
@@ -1001,6 +1268,7 @@ DiveAnalizer/
 │       └── queue_db.py        # NEW (Sprint 2)
 ├── tests/
 │   ├── test_gpu.py            # NEW (Sprint 1)
+│   ├── test_system_profiler.py # NEW (Sprint 1.11) - System detection tests
 │   ├── test_queue.py          # NEW (Sprint 2)
 │   ├── test_api.py            # NEW (Sprint 3)
 │   ├── test_robustness.py     # NEW (Sprint 4)
