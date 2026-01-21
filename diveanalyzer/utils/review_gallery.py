@@ -1287,6 +1287,88 @@ class DiveGalleryGenerator:
                 width: 100%;
             }}
         }}
+
+        /* ===== FEAT-04: Placeholder Styles ===== */
+        .placeholder-card {{
+            animation: slideIn 0.3s ease-out;
+        }}
+
+        @keyframes slideIn {{
+            from {{
+                opacity: 0;
+                transform: translateY(10px);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0);
+            }}
+        }}
+
+        .placeholder-thumbnails {{
+            display: flex;
+            height: 200px;
+            gap: 3px;
+            background: #f5f5f5;
+            overflow: hidden;
+            padding: 8px;
+        }}
+
+        .placeholder-thumbnail {{
+            flex: 1;
+            background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+            border-radius: 4px;
+        }}
+
+        @keyframes loading {{
+            0% {{
+                background-position: 200% 0;
+            }}
+            100% {{
+                background-position: -200% 0;
+            }}
+        }}
+
+        .placeholder-info {{
+            padding: 12px;
+            background: #fafafa;
+        }}
+
+        .placeholder-number {{
+            height: 16px;
+            width: 80%;
+            background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }}
+
+        .placeholder-details {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }}
+
+        .placeholder-detail {{
+            height: 12px;
+            background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+            border-radius: 4px;
+        }}
+
+        .placeholder-confidence {{
+            height: 20px;
+            width: 60px;
+            background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+            border-radius: 4px;
+        }}
+        /* ===== END FEAT-04 ===== */
     </style>
 </head>
 <body>
@@ -1776,6 +1858,21 @@ class DiveGalleryGenerator:
                         }});
                     }}
 
+                    // FEAT-04: Handle thumbnail_ready events for progressive loading
+                    if (eventType === 'thumbnail_ready' && data.dive_id !== undefined) {{
+                        updateThumbnailInPlace(data.dive_id, data.frames);
+                    }}
+
+                    // FEAT-04: Handle thumbnail_frame_ready events for individual frame updates
+                    if (eventType === 'thumbnail_frame_ready' && data.dive_id !== undefined) {{
+                        updateThumbnailFrame(data.dive_id, data.frame_index, data.frame_data);
+                    }}
+
+                    // FEAT-07: Handle thumbnail_generation_complete for final status
+                    if (eventType === 'thumbnail_generation_complete') {{
+                        console.log(`Thumbnail generation complete: ${{data.completed_count}}/${{data.total_dives}} thumbnails`);
+                    }}
+
                 }} catch (error) {{
                     console.warn(`SSE: Error parsing event data:`, error);
                 }}
@@ -2041,6 +2138,113 @@ class DiveGalleryGenerator:
         }}
 
         // ===== END FEAT-03 =====
+
+        // ===== FEAT-04: Progressive Thumbnail Loading =====
+
+        /**
+         * Update thumbnail in place with fade-in animation (FEAT-04).
+         *
+         * This function updates a placeholder card with actual thumbnail frames
+         * when they become available from the background generation thread.
+         * It performs a smooth fade-out/fade-in transition.
+         *
+         * @param {{number}} diveId - The dive ID to update
+         * @param {{Array}} frames - Array of base64 frame data URLs
+         */
+        function updateThumbnailInPlace(diveId, frames) {{
+            const card = document.querySelector(`[data-id="${{diveId}}"]`);
+            if (!card) {{
+                console.warn(`FEAT-04: Could not find card for dive ${{diveId}}`);
+                return;
+            }}
+
+            const thumbArea = card.querySelector('.placeholder-thumbnails') || card.querySelector('.thumbnails');
+            if (!thumbArea) {{
+                console.warn(`FEAT-04: Could not find thumbnail area for dive ${{diveId}}`);
+                return;
+            }}
+
+            // Start fade-out animation
+            thumbArea.style.transition = 'opacity 0.2s ease-out';
+            thumbArea.style.opacity = '0';
+
+            // Swap images after fade-out completes
+            setTimeout(() => {{
+                try {{
+                    // Create frame grid HTML
+                    let frameHTML = '';
+                    if (Array.isArray(frames) && frames.length > 0) {{
+                        frameHTML = frames.map((frame, idx) => {{
+                            if (frame) {{
+                                return `<img src="${{frame}}" class="thumbnail" style="flex: 1; object-fit: cover;" alt="Frame ${{idx}}" />`;
+                            }}
+                            return '';
+                        }}).join('');
+                    }}
+
+                    // Update the thumbnails container
+                    thumbArea.innerHTML = frameHTML || '<div style="flex: 1; background: #ddd;"></div>';
+                    thumbArea.className = 'thumbnails';  // Replace placeholder-thumbnails with thumbnails
+
+                    // Fade back in
+                    thumbArea.style.opacity = '1';
+                    thumbArea.style.transition = 'opacity 0.3s ease-in';
+
+                    console.log(`FEAT-04: Updated thumbnails for dive ${{diveId}} (${{frames.length}} frames)`);
+                }} catch (error) {{
+                    console.error(`FEAT-04: Error updating thumbnails for dive ${{diveId}}:`, error);
+                }}
+            }}, 200);  // Match CSS transition duration
+        }}
+
+        /**
+         * Update individual thumbnail frame in place (FEAT-04).
+         *
+         * This function updates a single frame in the thumbnail grid as it becomes
+         * available from the background generation thread. Allows for progressive
+         * frame-by-frame updates.
+         *
+         * @param {number} diveId - The dive ID to update
+         * @param {number} frameIndex - Index of the frame (0-7)
+         * @param {string} frameData - Base64 frame data URL
+         */
+        function updateThumbnailFrame(diveId, frameIndex, frameData) {{
+            const card = document.querySelector(`[data-id="${{diveId}}"]`);
+            if (!card) return;
+
+            const thumbArea = card.querySelector('.placeholder-thumbnails') || card.querySelector('.thumbnails');
+            if (!thumbArea) return;
+
+            // Get or create frames container
+            let frames = thumbArea.querySelectorAll('img');
+
+            if (frameIndex === 0 && frames.length === 0) {{
+                // First frame - convert placeholder to actual frames container
+                thumbArea.className = 'thumbnails';
+                thumbArea.innerHTML = '';
+                // Create 8 empty slots
+                for (let i = 0; i < 8; i++) {{
+                    const img = document.createElement('img');
+                    img.className = 'thumbnail';
+                    img.style.flex = '1';
+                    img.style.objectFit = 'cover';
+                    img.style.background = '#ddd';
+                    img.style.opacity = '0.5';
+                    thumbArea.appendChild(img);
+                }}
+                frames = thumbArea.querySelectorAll('img');
+            }}
+
+            // Update specific frame with fade-in
+            if (frameIndex < frames.length && frameData) {{
+                const img = frames[frameIndex];
+                img.src = frameData;
+                img.style.opacity = '1';
+                img.style.transition = 'opacity 0.3s ease-in';
+            }}
+        }}
+
+        // ===== END FEAT-04 =====
 
         // Initialize event consumer and status dashboard
         let eventConsumer = null;
@@ -2666,6 +2870,168 @@ MODAL VIEW (open by double-clicking a dive):
         except Exception as e:
             print(f"⚠️  Could not open browser: {e}")
             print(f"📂 Manual open: {html_path}")
+
+
+def extract_timeline_frames_background(
+    video_path: Path,
+    dive_id: int,
+    server=None,
+    width: int = 720,
+    height: int = 1280,
+    quality: int = 3
+) -> List[str]:
+    """Extract 8 evenly-spaced frames from dive video for timeline (deferred).
+
+    FEAT-07: This function is called in a background thread after all dives are detected.
+    It emits thumbnail_ready events to the server as frames become available.
+
+    Frames at: 0%, 12.5%, 25%, 37.5%, 50%, 62.5%, 75%, 87.5%
+    Resolution: 720x1280 (portrait, high quality for small display)
+    Quality: 3 (best quality)
+
+    Args:
+        video_path: Path to dive video file
+        dive_id: Dive ID for event emission
+        server: EventServer instance for event emission (optional)
+        width: Frame width (default 720)
+        height: Frame height (default 1280)
+        quality: JPEG quality (default 3, best)
+
+    Returns:
+        List of 8 base64 data URLs, or None if failed
+    """
+    import tempfile
+
+    frames = []
+    percentages = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]
+
+    try:
+        duration = DiveGalleryGenerator(Path(video_path).parent).get_video_duration(video_path)
+        if duration <= 0:
+            return None
+    except:
+        return None
+
+    for pct in percentages:
+        try:
+            time_sec = duration * pct
+
+            # Create temp file for thumbnail
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                thumb_path = tmp.name
+
+            # Extract thumbnail
+            cmd = [
+                "ffmpeg",
+                "-ss", str(time_sec),
+                "-i", str(video_path),
+                "-vframes", "1",
+                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+                "-q:v", str(quality),
+                "-y",
+                thumb_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+            # Convert to base64
+            if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+                with open(thumb_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode()
+                frames.append(f"data:image/jpeg;base64,{img_data}")
+
+                # Emit event after each frame is ready (progressive loading)
+                if server and len(frames) > 0:
+                    server.emit("thumbnail_frame_ready", {
+                        "dive_id": dive_id,
+                        "frame_index": len(frames) - 1,
+                        "total_frames": len(percentages),
+                        "frame_data": f"data:image/jpeg;base64,{img_data}"
+                    })
+            else:
+                frames.append(None)
+
+            # Clean up temp file
+            try:
+                os.unlink(thumb_path)
+            except:
+                pass
+
+        except Exception as e:
+            frames.append(None)
+
+    # Emit complete thumbnail batch event
+    if server and all(f is not None for f in frames):
+        server.emit("thumbnail_ready", {
+            "dive_id": dive_id,
+            "type": "grid",
+            "frames": frames,
+            "frame_count": len(frames)
+        })
+
+    return frames if any(f is not None for f in frames) else None
+
+
+def generate_thumbnails_deferred(
+    dives: List[Dict[str, Any]],
+    output_dir: Path,
+    server=None,
+    timeout_sec: float = 20.0
+) -> None:
+    """Generate thumbnails in background thread after all dives detected (FEAT-07).
+
+    This function is called in a background thread after Phase 1 (audio detection) completes.
+    It generates thumbnails for each dive and emits thumbnail_ready events to the server.
+
+    The gallery shows placeholders immediately while thumbnails are generated in background.
+
+    Args:
+        dives: List of DiveEvent objects to generate thumbnails for
+        output_dir: Directory containing extracted dive videos
+        server: EventServer instance for event emission (optional)
+        timeout_sec: Maximum time to spend on thumbnail generation
+    """
+    import time
+
+    start_time = time.time()
+    dive_count = 0
+
+    for dive_num, dive_path in sorted(dives):
+        # Check timeout
+        if time.time() - start_time > timeout_sec:
+            print(f"[FEAT-07] Thumbnail generation timeout after {dive_count} dives")
+            break
+
+        try:
+            video_path = Path(output_dir) / f"dive_{dive_num:03d}.mp4"
+            if not video_path.exists():
+                continue
+
+            # Extract timeline frames with progressive emission
+            frames = extract_timeline_frames_background(
+                video_path,
+                dive_id=dive_num,
+                server=server
+            )
+
+            if frames:
+                dive_count += 1
+                print(f"[FEAT-07] Generated thumbnails for dive {dive_num}")
+
+        except Exception as e:
+            print(f"[FEAT-07] Error generating thumbnails for dive {dive_num}: {e}")
+            continue
+
+    # Emit completion event
+    if server:
+        elapsed = time.time() - start_time
+        server.emit("thumbnail_generation_complete", {
+            "completed_count": dive_count,
+            "total_dives": len(dives),
+            "elapsed_seconds": elapsed
+        })
+
+    print(f"[FEAT-07] Thumbnail generation complete: {dive_count} thumbnails generated")
 
 
 def create_review_gallery(output_dir: Path, video_name: str = "") -> Path:

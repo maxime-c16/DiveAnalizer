@@ -5,6 +5,7 @@ Main entry point for the application.
 """
 
 import sys
+import threading
 import webbrowser
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,7 @@ from .storage.cache import CacheManager
 from .storage.icloud import find_icloud_videos
 from .utils.system_profiler import SystemProfiler
 from .storage.cleanup import cleanup_expired_cache, get_cache_stats, check_disk_space
+from .utils.review_gallery import generate_thumbnails_deferred
 from .server import EventServer
 
 # Lazy imports for audio (requires librosa)
@@ -783,6 +785,30 @@ def process(
                 else:
                     click.echo(f"  ✗ dive_{dive_num:03d}.mp4 - {error}")
 
+            # FEAT-07: Start background thumbnail generation after extraction
+            # This allows the gallery to appear immediately with placeholders,
+            # while thumbnails are generated in the background
+            if server and success_count > 0:
+                click.echo(f"\n🖼️  Generating thumbnails in background...")
+
+                # Prepare dive list for background generation
+                dive_list_for_thumbnails = [
+                    (dive_num, str(output_dir / f"dive_{dive_num:03d}.mp4"))
+                    for dive_num in sorted(results.keys())
+                    if results[dive_num][0]  # Only successful dives
+                ]
+
+                # Start background thread for thumbnail generation
+                # This emits thumbnail_ready events as each one completes
+                thumbnail_thread = threading.Thread(
+                    target=generate_thumbnails_deferred,
+                    args=(dive_list_for_thumbnails, output_dir, server),
+                    kwargs={"timeout_sec": 30.0},
+                    daemon=True
+                )
+                thumbnail_thread.start()
+                click.echo(f"✓ Background thumbnail generation started")
+
         except Exception as e:
             click.echo(f"❌ Failed to extract clips: {e}", err=True)
             if server:
@@ -795,7 +821,14 @@ def process(
                 "status": "success",
                 "output_directory": str(output_dir),
             })
-            click.echo("\n🌐 Server shutting down...")
+
+            # FEAT-07: Give background thumbnail generation some time before shutdown
+            # This allows at least the first few thumbnails to be generated
+            import time
+            click.echo("\n🌐 Waiting for initial thumbnails to generate...")
+            time.sleep(5)  # Wait 5 seconds for thumbnail generation to start
+
+            click.echo("🌐 Server shutting down...")
             if server.stop():
                 click.echo("✓ Server stopped")
 
