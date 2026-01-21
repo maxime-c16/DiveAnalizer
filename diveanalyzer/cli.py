@@ -29,7 +29,7 @@ from .storage.cache import CacheManager
 from .storage.icloud import find_icloud_videos
 from .utils.system_profiler import SystemProfiler
 from .storage.cleanup import cleanup_expired_cache, get_cache_stats, check_disk_space
-from .utils.review_gallery import generate_thumbnails_deferred
+from .utils.review_gallery import generate_thumbnails_deferred, DiveGalleryGenerator
 from .server import EventServer
 
 # Lazy imports for audio (requires librosa)
@@ -785,6 +785,25 @@ def process(
                 else:
                     click.echo(f"  ✗ dive_{dive_num:03d}.mp4 - {error}")
 
+            # Create review gallery HTML with placeholders for detected dives
+            # This must be done before the server starts serving requests
+            if success_count > 0:
+                try:
+                    click.echo(f"\n📸 Creating review gallery...")
+                    generator = DiveGalleryGenerator(output_dir, Path(video_path).name)
+                    generator.scan_dives()
+                    gallery_path = generator.generate_html()
+
+                    # Only auto-open browser if server is not handling it
+                    if not server:
+                        generator.open_in_browser(Path(gallery_path))
+
+                    click.echo(f"✓ Gallery created: {gallery_path}")
+                except Exception as e:
+                    click.echo(f"⚠️  Could not create gallery: {e}")
+                    if server:
+                        click.echo(f"⚠️  Server may not be able to serve gallery")
+
             # FEAT-07: Start background thumbnail generation after extraction
             # This allows the gallery to appear immediately with placeholders,
             # while thumbnails are generated in the background
@@ -822,11 +841,18 @@ def process(
                 "output_directory": str(output_dir),
             })
 
-            # FEAT-07: Give background thumbnail generation some time before shutdown
-            # This allows at least the first few thumbnails to be generated
+            # FEAT-07: Give background thumbnail generation time to complete
+            # Timeline: Each thumbnail takes ~1-2s to generate (8 frames @ 720x1280)
+            # Wait longer if we have many dives to extract
             import time
-            click.echo("\n🌐 Waiting for initial thumbnails to generate...")
-            time.sleep(5)  # Wait 5 seconds for thumbnail generation to start
+            if success_count > 0:
+                # Estimate wait time: ~1.5s per thumbnail, with timeout at 30s
+                # For 10 dives: 15s wait; for 60+ dives: 30s timeout
+                wait_sec = min(success_count * 1.5, 30.0)
+                click.echo(f"\n🌐 Waiting for thumbnails to generate (estimated {wait_sec:.0f}s)...")
+                time.sleep(wait_sec)
+            else:
+                click.echo("\n🌐 No dives to thumbnail")
 
             click.echo("🌐 Server shutting down...")
             if server.stop():
@@ -857,13 +883,7 @@ def process(
     default=-25.0,
     help="Audio threshold in dB",
 )
-@click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    help="Verbose output",
-)
-def detect(video_path: str, threshold: float, verbose: bool):
+def detect(video_path: str, threshold: float):
     """
     Detect dives without extracting (dry run).
 
@@ -914,7 +934,7 @@ def analyze_audio(audio_path: str, threshold: float):
     Useful for debugging audio-based detection.
     """
     try:
-        from .detection.audio import get_audio_properties
+        from .detection.audio import get_audio_properties, detect_splash_peaks
 
         audio_path = str(Path(audio_path).resolve())
 
@@ -947,13 +967,7 @@ def analyze_audio(audio_path: str, threshold: float):
     default=5.0,
     help="Frames per second to sample",
 )
-@click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    help="Show detailed motion burst info",
-)
-def analyze_motion(video_path: str, sample_fps: float, verbose: bool):
+def analyze_motion(video_path: str, sample_fps: float):
     """
     Analyze motion patterns in a video.
 
