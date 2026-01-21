@@ -27,6 +27,7 @@ from .storage.cache import CacheManager
 from .storage.icloud import find_icloud_videos
 from .utils.system_profiler import SystemProfiler
 from .storage.cleanup import cleanup_expired_cache, get_cache_stats, check_disk_space
+from .server import EventServer
 
 # Lazy imports for audio (requires librosa)
 def get_audio_functions():
@@ -316,6 +317,18 @@ def stats(detailed: bool):
     default=True,
     help="Enable automatic phase selection based on system capabilities (default: True)",
 )
+@click.option(
+    "--enable-server",
+    is_flag=True,
+    default=False,
+    help="Enable HTTP server with live review interface (http://localhost:8765)",
+)
+@click.option(
+    "--server-port",
+    type=int,
+    default=8765,
+    help="Port for HTTP server (default: 8765)",
+)
 def process(
     video_path: str,
     output: str,
@@ -333,6 +346,8 @@ def process(
     batch_size: int,
     force_phase: Optional[str],
     auto_select: bool,
+    enable_server: bool,
+    server_port: int,
 ):
     """
     Process a video and extract all detected dives.
@@ -361,6 +376,32 @@ def process(
         click.echo(f"📹 Input: {video_path}")
         click.echo(f"📁 Output: {output_dir}")
         click.echo()
+
+        # Initialize server if requested
+        server: Optional[EventServer] = None
+        if enable_server:
+            click.echo("🌐 Starting HTTP server for live review...")
+            try:
+                # Check if gallery template exists (will be created after extraction)
+                gallery_path = output_dir / "review_gallery.html"
+
+                server = EventServer(
+                    gallery_path=str(gallery_path),
+                    host="localhost",
+                    port=server_port,
+                    log_level="INFO" if verbose else "WARNING",
+                )
+
+                if server.start():
+                    click.echo(f"✓ Server running at {server.get_url()}")
+                    click.echo(f"  Events: {server.get_events_url()}")
+                else:
+                    click.echo("⚠️  Failed to start server, continuing without live review")
+                    server = None
+            except Exception as e:
+                click.echo(f"⚠️  Server startup failed: {e}, continuing without live review")
+                server = None
+            click.echo()
 
         # Get video info
         try:
@@ -437,6 +478,13 @@ def process(
             )
             click.echo(f"✓ Found {len(peaks)} splash peaks")
 
+            # Emit event for server
+            if server:
+                server.emit("splash_detection_complete", {
+                    "peak_count": len(peaks),
+                    "threshold_db": threshold,
+                })
+
             if verbose:
                 for i, (time, amp) in enumerate(peaks, 1):
                     click.echo(f"  {i}. {time:7.2f}s (amplitude {amp:6.1f}dB)")
@@ -462,6 +510,13 @@ def process(
                 click.echo("  Detecting motion bursts...")
                 motion_events = detect_motion_bursts(motion_video, sample_fps=5.0)
                 click.echo(f"  ✓ Found {len(motion_events)} motion bursts")
+
+                # Emit event for server
+                if server:
+                    server.emit("motion_detection_complete", {
+                        "burst_count": len(motion_events),
+                        "proxy_height": proxy_height,
+                    })
 
                 if verbose and motion_events:
                     click.echo("    Motion details (first 5):")
@@ -513,6 +568,13 @@ def process(
                 )
 
                 click.echo(f"  ✓ Found {len(person_departures)} person departures")
+
+                # Emit event for server
+                if server:
+                    server.emit("person_detection_complete", {
+                        "departure_count": len(person_departures),
+                        "confidence_threshold": 0.5,
+                    })
 
                 if verbose and person_departures:
                     click.echo("    Person departures (first 5):")
@@ -579,6 +641,14 @@ def process(
                 click.echo(f"  └─ Motion validated: {validated}/{len(dives)}")
 
             click.echo(f"✓ Final dive count: {len(dives)}")
+
+            # Emit event for server
+            if server:
+                server.emit("dives_detected", {
+                    "dive_count": len(dives),
+                    "signal_type": signal_type,
+                    "confidence_threshold": confidence,
+                })
         except Exception as e:
             click.echo(f"❌ Failed to fuse signals: {e}", err=True)
             import traceback
@@ -604,6 +674,14 @@ def process(
             success_count = sum(1 for s, _, _ in results.values() if s)
             click.echo(f"✓ Successfully extracted {success_count}/{len(dives)} clips")
 
+            # Emit event for server
+            if server:
+                server.emit("extraction_complete", {
+                    "total_dives": len(dives),
+                    "successful": success_count,
+                    "failed": len(dives) - success_count,
+                })
+
             # Show summary
             click.echo("\n📊 Summary:")
             click.echo(f"  Total dives: {len(dives)}")
@@ -627,7 +705,19 @@ def process(
 
         except Exception as e:
             click.echo(f"❌ Failed to extract clips: {e}", err=True)
+            if server:
+                server.stop()
             sys.exit(1)
+
+        # Emit final event and shutdown server
+        if server:
+            server.emit("processing_complete", {
+                "status": "success",
+                "output_directory": str(output_dir),
+            })
+            click.echo("\n🌐 Server shutting down...")
+            if server.stop():
+                click.echo("✓ Server stopped")
 
         click.echo("\n✅ Done!")
 
@@ -637,6 +727,11 @@ def process(
             import traceback
 
             traceback.print_exc()
+
+        # Cleanup server on error
+        if 'server' in locals() and server:
+            server.stop()
+
         sys.exit(1)
 
 
