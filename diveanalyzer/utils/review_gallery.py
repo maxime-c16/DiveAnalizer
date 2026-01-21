@@ -1029,6 +1029,223 @@ class DiveGalleryGenerator:
             display: none;
         }}
 
+        /* FEAT-05: Status Dashboard & Progress Tracking */
+        .status-dashboard {{
+            position: sticky;
+            top: 0;
+            z-index: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-bottom: 2px solid rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            border-radius: 0 0 8px 8px;
+        }}
+
+        .status-dashboard-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 20px;
+        }}
+
+        .status-dashboard-title {{
+            font-size: 16px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
+        .status-dashboard-phase {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 500;
+        }}
+
+        .status-dashboard-phase.phase-1 {{
+            background: rgba(59, 130, 246, 0.3);
+            border: 1px solid rgba(59, 130, 246, 0.5);
+        }}
+
+        .status-dashboard-phase.phase-2 {{
+            background: rgba(234, 179, 8, 0.3);
+            border: 1px solid rgba(234, 179, 8, 0.5);
+        }}
+
+        .status-dashboard-phase.phase-3 {{
+            background: rgba(34, 197, 94, 0.3);
+            border: 1px solid rgba(34, 197, 94, 0.5);
+        }}
+
+        .status-dashboard-metrics {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }}
+
+        .status-metric {{
+            background: rgba(255,255,255,0.1);
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }}
+
+        .status-metric-label {{
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.8;
+            margin-bottom: 4px;
+        }}
+
+        .status-metric-value {{
+            font-size: 16px;
+            font-weight: bold;
+        }}
+
+        .progress-container {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+
+        .progress-bar-wrapper {{
+            flex: 1;
+        }}
+
+        .progress-bar {{
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 3px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.3);
+        }}
+
+        .progress-bar-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50 0%, #8BC34A 100%);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }}
+
+        .progress-percent {{
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 45px;
+            text-align: right;
+        }}
+
+        .status-connection-banner {{
+            display: none;
+            position: fixed;
+            top: 70px;
+            left: 20px;
+            right: 20px;
+            background: #ff9800;
+            color: white;
+            padding: 12px 15px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 599;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideDown 0.3s ease;
+        }}
+
+        .status-connection-banner.show {{
+            display: flex;
+        }}
+
+        .status-connection-banner.error {{
+            background: #f44336;
+        }}
+
+        .status-spinner {{
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }}
+
+        @keyframes slideDown {{
+            from {{
+                transform: translateY(-100%);
+                opacity: 0;
+            }}
+            to {{
+                transform: translateY(0);
+                opacity: 1;
+            }}
+        }}
+
+        @keyframes spin {{
+            to {{
+                transform: rotate(360deg);
+            }}
+        }}
+
+        @media (max-width: 640px) {{
+            .status-dashboard {{
+                padding: 15px;
+                margin-bottom: 15px;
+            }}
+
+            .status-dashboard-header {{
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }}
+
+            .status-dashboard-metrics {{
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }}
+
+            .status-metric {{
+                padding: 10px;
+                font-size: 12px;
+            }}
+
+            .status-metric-value {{
+                font-size: 14px;
+            }}
+
+            .progress-container {{
+                gap: 8px;
+            }}
+
+            .progress-percent {{
+                min-width: 35px;
+                font-size: 12px;
+            }}
+
+            .status-connection-banner {{
+                top: 15px;
+                left: 10px;
+                right: 10px;
+                padding: 10px 12px;
+                font-size: 12px;
+            }}
+        }}
+
         @media (max-width: 640px) {{
             .connection-status {{
                 top: 10px;
@@ -1073,6 +1290,53 @@ class DiveGalleryGenerator:
     </style>
 </head>
 <body>
+    <!-- FEAT-05: Status Dashboard & Progress Tracking -->
+    <div class="status-dashboard" id="statusDashboard">
+        <div class="status-dashboard-header">
+            <div class="status-dashboard-title">
+                <span id="dashboardTitle">📊 Processing Status</span>
+            </div>
+            <div class="status-dashboard-phase" id="phaseIndicator">
+                <span id="phaseLabel">Phase 1 - Audio Detection</span>
+            </div>
+        </div>
+
+        <div class="status-dashboard-metrics">
+            <div class="status-metric">
+                <div class="status-metric-label">Dives Found</div>
+                <div class="status-metric-value" id="metricDives">0/0</div>
+            </div>
+            <div class="status-metric">
+                <div class="status-metric-label">Processing Speed</div>
+                <div class="status-metric-value" id="metricSpeed">0.0 dives/min</div>
+            </div>
+            <div class="status-metric">
+                <div class="status-metric-label">Time Remaining</div>
+                <div class="status-metric-value" id="metricTime">--:--</div>
+            </div>
+            <div class="status-metric">
+                <div class="status-metric-label">Thumbnails Ready</div>
+                <div class="status-metric-value" id="metricThumbnails">0/0</div>
+            </div>
+        </div>
+
+        <div class="progress-container">
+            <div class="progress-bar-wrapper">
+                <div class="progress-bar">
+                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+            </div>
+            <div class="progress-percent" id="progressPercent">0%</div>
+        </div>
+    </div>
+
+    <!-- FEAT-08: Connection Status Banner -->
+    <div class="status-connection-banner" id="connectionBanner">
+        <span class="status-spinner" id="bannerSpinner"></span>
+        <span id="bannerText">Reconnecting...</span>
+        <button id="bannerRetryBtn" style="margin-left: auto; background: rgba(255,255,255,0.2); border: 1px solid white; color: white; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: 500;">Retry</button>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>🤿 Dive Review Gallery</h1>
@@ -1267,7 +1531,90 @@ class DiveGalleryGenerator:
         let currentDiveIndex = 0;
         let cards = [];
 
-        // ===== FEAT-02: SSE Real-Time Event Consumer =====
+        // ===== FEAT-05: Status Dashboard Management =====
+        class StatusDashboard {{
+            constructor() {{
+                this.data = {{
+                    phase: 'phase_1',
+                    phase_name: 'Audio Detection',
+                    dives_found: 0,
+                    dives_expected: 0,
+                    thumbnails_ready: 0,
+                    thumbnails_expected: 0,
+                    processing_speed: 0,
+                    elapsed_seconds: 0,
+                    progress_percent: 0
+                }};
+                this.phaseColors = {{
+                    'phase_1': '#3b82f6',
+                    'phase_2': '#eab308',
+                    'phase_3': '#22c55e'
+                }};
+                this.phaseNames = {{
+                    'phase_1': 'Phase 1 - Audio Detection',
+                    'phase_2': 'Phase 2 - Motion Detection',
+                    'phase_3': 'Phase 3 - Person Detection'
+                }};
+            }}
+
+            update(statusData) {{
+                // Merge new data
+                Object.assign(this.data, statusData);
+                this._render();
+            }}
+
+            _render() {{
+                requestAnimationFrame(() => {{
+                    const dashboard = document.getElementById('statusDashboard');
+                    if (!dashboard) return;
+
+                    // Update phase indicator
+                    const phaseIndicator = document.getElementById('phaseIndicator');
+                    const phaseLabel = document.getElementById('phaseLabel');
+                    if (phaseIndicator && phaseLabel) {{
+                        phaseIndicator.className = `status-dashboard-phase ${{this.data.phase}}`;
+                        phaseLabel.textContent = this.data.phase_name || this.phaseNames[this.data.phase];
+                    }}
+
+                    // Update metrics
+                    const diveText = `${{this.data.dives_found}}/${{this.data.dives_expected}}`;
+                    const speedText = `${{this.data.processing_speed.toFixed(2)}} dives/min`;
+                    const timeText = this._formatTimeRemaining();
+                    const thumbText = `${{this.data.thumbnails_ready}}/${{this.data.thumbnails_expected}}`;
+
+                    document.getElementById('metricDives').textContent = diveText;
+                    document.getElementById('metricSpeed').textContent = speedText;
+                    document.getElementById('metricTime').textContent = timeText;
+                    document.getElementById('metricThumbnails').textContent = thumbText;
+
+                    // Update progress bar
+                    const percent = Math.min(100, this.data.progress_percent || 0);
+                    const fill = document.getElementById('progressBarFill');
+                    const percentLabel = document.getElementById('progressPercent');
+                    if (fill) fill.style.width = percent + '%';
+                    if (percentLabel) percentLabel.textContent = Math.round(percent) + '%';
+                }});
+            }}
+
+            _formatTimeRemaining() {{
+                if (this.data.processing_speed <= 0 || this.data.dives_expected <= 0) {{
+                    return '--:--';
+                }}
+
+                // Calculate remaining dives
+                const remaining = this.data.dives_expected - this.data.dives_found;
+                if (remaining <= 0) return '0:00';
+
+                // Calculate time in minutes
+                const timeMinutes = remaining / this.data.processing_speed;
+                const mins = Math.floor(timeMinutes);
+                const secs = Math.round((timeMinutes - mins) * 60);
+
+                return `${{mins}}:${{String(secs).padStart(2, '0')}}`;
+            }}
+        }}
+
+        // ===== FEAT-08: Enhanced EventStreamConsumer with Reconnection =====
         class EventStreamConsumer {{
             constructor(serverUrl = null) {{
                 this.serverUrl = serverUrl || this._detectServerUrl();
@@ -1275,9 +1622,50 @@ class DiveGalleryGenerator:
                 this.isConnected = false;
                 this.reconnectAttempts = 0;
                 this.maxReconnectAttempts = 5;
-                this.reconnectDelay = 2000;
+                this.baseReconnectDelay = 1000;  // Start at 1s
                 this.eventLog = [];
                 this.maxLogEntries = 100;
+                this.cachedEvents = [];
+                this.maxCachedEvents = 500;
+                this.lastEventId = null;
+                this.pollingInterval = null;
+                this.pollingActive = false;
+                this.statusDashboard = null;
+                this._initializeCache();
+            }}
+
+            _initializeCache() {{
+                // Load cached events from localStorage
+                try {{
+                    const cached = localStorage.getItem('diveanalyzer_events');
+                    if (cached) {{
+                        this.cachedEvents = JSON.parse(cached);
+                        console.log(`SSE: Loaded ${{this.cachedEvents.length}} cached events from localStorage`);
+                    }}
+                }} catch (e) {{
+                    console.warn('SSE: Could not load cached events:', e);
+                }}
+            }}
+
+            _saveToCache(event) {{
+                // Add to in-memory cache
+                this.cachedEvents.push(event);
+
+                // Trim if too large
+                if (this.cachedEvents.length > this.maxCachedEvents) {{
+                    this.cachedEvents.shift();
+                }}
+
+                // Save to localStorage
+                try {{
+                    localStorage.setItem('diveanalyzer_events', JSON.stringify(this.cachedEvents));
+                }} catch (e) {{
+                    console.warn('SSE: Could not save to localStorage:', e);
+                }}
+            }}
+
+            setStatusDashboard(dashboard) {{
+                this.statusDashboard = dashboard;
             }}
 
             _detectServerUrl() {{
@@ -1291,8 +1679,8 @@ class DiveGalleryGenerator:
             }}
 
             connect() {{
-                console.log(`SSE: Attempting to connect to ${{this.serverUrl}}/events`);
-                this._updateStatus('connecting', `Connecting to ${{this.serverUrl}}`);
+                console.log(`SSE: Attempting to connect to ${{this.serverUrl}}/events (attempt ${{this.reconnectAttempts + 1}}/${{this.maxReconnectAttempts}})`);
+                this._updateConnectionBanner('connecting', this.reconnectAttempts + 1);
 
                 try {{
                     this.eventSource = new EventSource(`${{this.serverUrl}}/events`);
@@ -1305,7 +1693,9 @@ class DiveGalleryGenerator:
                         'person_detection_complete',
                         'dives_detected',
                         'extraction_complete',
-                        'processing_complete'
+                        'processing_complete',
+                        'status_update',
+                        'dive_detected'
                     ];
 
                     eventTypes.forEach(eventType => {{
@@ -1330,6 +1720,8 @@ class DiveGalleryGenerator:
                         this.isConnected = true;
                         this.reconnectAttempts = 0;
                         this._updateStatus('connected', 'Connected');
+                        this._hideConnectionBanner();
+                        this._stopPolling();
                         this._logEvent('connected', 'Connected to server', 'success');
                     }};
 
@@ -1345,10 +1737,19 @@ class DiveGalleryGenerator:
                 }}
             }}
 
+            _getReconnectDelay(attempt) {{
+                // Exponential backoff: 1s, 2s, 4s, 8s, 8s
+                const delays = [1000, 2000, 4000, 8000, 8000];
+                return delays[Math.min(attempt, delays.length - 1)];
+            }}
+
             _handleEvent(eventType, event) {{
                 try {{
                     const data = JSON.parse(event.data);
                     console.log(`SSE: Event received - ${{eventType}}:`, data);
+
+                    // Cache all events
+                    this._saveToCache({{ event_type: eventType, data, timestamp: new Date().toISOString() }});
 
                     // Update last event timestamp and message
                     this._updateLatestEvent(eventType, data);
@@ -1359,6 +1760,11 @@ class DiveGalleryGenerator:
                         `${{eventType}}: ${{JSON.stringify(data).substring(0, 100)}}`,
                         this._getEventLogType(eventType)
                     );
+
+                    // FEAT-05: Handle status_update events for dashboard
+                    if (eventType === 'status_update' && this.statusDashboard) {{
+                        this.statusDashboard.update(data);
+                    }}
 
                     // FEAT-03: Handle dive_detected events to render placeholders
                     if (eventType === 'dive_detected' && data.dive_index !== undefined) {{
@@ -1382,9 +1788,9 @@ class DiveGalleryGenerator:
 
                 if (this.reconnectAttempts < this.maxReconnectAttempts) {{
                     this.reconnectAttempts++;
-                    const delay = this.reconnectDelay * this.reconnectAttempts;
+                    const delay = this._getReconnectDelay(this.reconnectAttempts - 1);
                     console.log(`SSE: Attempting to reconnect in ${{delay}}ms (attempt ${{this.reconnectAttempts}}/${{this.maxReconnectAttempts}})`);
-                    this._updateStatus('connecting', `Reconnecting... (${{this.reconnectAttempts}}/${{this.maxReconnectAttempts}})`);
+                    this._showConnectionBanner('reconnecting', this.reconnectAttempts);
 
                     setTimeout(() => {{
                         if (!this.isConnected) {{
@@ -1393,8 +1799,11 @@ class DiveGalleryGenerator:
                     }}, delay);
                 }} else {{
                     console.error('SSE: Max reconnection attempts exceeded');
-                    this._updateStatus('disconnected', 'Server not available');
-                    this._logEvent('error', 'Server not available, using local mode', 'warning');
+                    this._updateStatus('disconnected', 'Connection Lost');
+                    this._showConnectionBanner('error', this.reconnectAttempts);
+                    this._logEvent('error', 'Connection lost - starting fallback polling', 'error');
+                    // Start polling fallback
+                    this._startPolling();
                 }}
             }}
 
@@ -1475,6 +1884,80 @@ class DiveGalleryGenerator:
                 return 'info';
             }}
 
+            _startPolling() {{
+                if (this.pollingActive) return;
+
+                console.log('SSE: Starting fallback polling every 3 seconds');
+                this.pollingActive = true;
+                this._pollOnce();  // Start immediately
+            }}
+
+            _pollOnce() {{
+                if (!this.pollingActive) return;
+
+                fetch(`${{this.serverUrl}}/events-history`)
+                    .then(res => res.json())
+                    .then(data => {{
+                        if (data && data.events && Array.isArray(data.events)) {{
+                            // Process new events not yet cached
+                            data.events.forEach(event => {{
+                                const cached = this.cachedEvents.some(e =>
+                                    e.timestamp === event.timestamp && e.event_type === event.event_type
+                                );
+                                if (!cached) {{
+                                    this._handleEvent(event.event_type, {{ data: event.data }});
+                                }}
+                            }});
+                        }}
+                    }})
+                    .catch(err => {{
+                        console.debug('Polling error:', err);
+                    }})
+                    .finally(() => {{
+                        if (this.pollingActive) {{
+                            this.pollingInterval = setTimeout(() => this._pollOnce(), 3000);
+                        }}
+                    }});
+            }}
+
+            _stopPolling() {{
+                if (this.pollingInterval) {{
+                    clearTimeout(this.pollingInterval);
+                    this.pollingInterval = null;
+                }}
+                this.pollingActive = false;
+                console.log('SSE: Stopped polling');
+            }}
+
+            _showConnectionBanner(state, attemptNumber = 0) {{
+                const banner = document.getElementById('connectionBanner');
+                const text = document.getElementById('bannerText');
+                const spinner = document.getElementById('bannerSpinner');
+                const btn = document.getElementById('bannerRetryBtn');
+
+                if (!banner) return;
+
+                if (state === 'reconnecting') {{
+                    banner.classList.add('show');
+                    banner.classList.remove('error');
+                    text.textContent = `Reconnecting... (${{attemptNumber}}/${{this.maxReconnectAttempts}})`;
+                    spinner.style.display = 'inline-block';
+                    btn.style.display = 'none';
+                }} else if (state === 'error') {{
+                    banner.classList.add('show', 'error');
+                    text.textContent = 'Connection lost - Using cached data';
+                    spinner.style.display = 'none';
+                    btn.style.display = 'inline-block';
+                }}
+            }}
+
+            _hideConnectionBanner() {{
+                const banner = document.getElementById('connectionBanner');
+                if (banner) {{
+                    banner.classList.remove('show', 'error');
+                }}
+            }}
+
             disconnect() {{
                 if (this.eventSource) {{
                     this.eventSource.close();
@@ -1483,6 +1966,11 @@ class DiveGalleryGenerator:
                     console.log('SSE: Disconnected');
                     this._updateStatus('disconnected', 'Disconnected');
                 }}
+                this._stopPolling();
+            }}
+
+            getCachedEvents() {{
+                return this.cachedEvents;
             }}
 
             getLogEntries() {{
@@ -1554,8 +2042,9 @@ class DiveGalleryGenerator:
 
         // ===== END FEAT-03 =====
 
-        // Initialize event consumer
+        // Initialize event consumer and status dashboard
         let eventConsumer = null;
+        let statusDashboard = null;
 
         function initializeEventConsumer() {{
             // Detect server URL
@@ -1563,7 +2052,21 @@ class DiveGalleryGenerator:
                 ? 'http://localhost:8765'
                 : `http://${{window.location.hostname}}:8765`;
 
+            // FEAT-05: Initialize status dashboard
+            statusDashboard = new StatusDashboard();
+
             eventConsumer = new EventStreamConsumer(serverUrl);
+            eventConsumer.setStatusDashboard(statusDashboard);
+
+            // Set up retry button in connection banner
+            const retryBtn = document.getElementById('bannerRetryBtn');
+            if (retryBtn) {{
+                retryBtn.addEventListener('click', () => {{
+                    console.log('Manual reconnect requested');
+                    eventConsumer.reconnectAttempts = 0;
+                    eventConsumer.connect();
+                }});
+            }}
 
             // Set up event log controls
             const toggleBtn = document.getElementById('toggleEventLog');

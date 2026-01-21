@@ -25,17 +25,20 @@ logger = logging.getLogger(__name__)
 
 
 class EventQueue:
-    """Thread-safe event queue with multiple consumer support."""
+    """Thread-safe event queue with multiple consumer support and history tracking."""
 
-    def __init__(self, max_size: int = 1000):
+    def __init__(self, max_size: int = 1000, max_history: int = 1000):
         """Initialize event queue.
 
         Args:
             max_size: Maximum number of events to keep in queue
+            max_history: Maximum number of events to keep in history
         """
         self.queue: Queue = Queue(maxsize=max_size)
         self.subscribers: List[Queue] = []
         self.lock = threading.Lock()
+        self.history: List[Dict[str, Any]] = []
+        self.max_history = max_history
 
     def publish(self, event_type: str, payload: Dict[str, Any]) -> None:
         """Publish an event to all subscribers.
@@ -55,6 +58,12 @@ class EventQueue:
             self.queue.put_nowait(event)
         except Exception as e:
             logger.warning(f"Could not add event to queue: {e}")
+
+        # Add to history
+        with self.lock:
+            self.history.append(event)
+            if len(self.history) > self.max_history:
+                self.history.pop(0)
 
         # Publish to all subscribers
         with self.lock:
@@ -98,6 +107,21 @@ class EventQueue:
         except Empty:
             return None
 
+    def get_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get event history.
+
+        Args:
+            limit: Maximum number of recent events to return
+
+        Returns:
+            List of recent events, limited to specified count
+        """
+        with self.lock:
+            # Return the most recent events (up to limit)
+            if limit <= 0:
+                return list(self.history)
+            return list(self.history[-limit:])
+
 
 class DiveReviewSSEHandler(BaseHTTPRequestHandler):
     """HTTP request handler for dive review server."""
@@ -118,6 +142,10 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         # SSE events endpoint
         elif path == "/events":
             self._handle_sse_stream()
+
+        # Event history endpoint (FEAT-08: Connection Management)
+        elif path == "/events-history":
+            self._handle_events_history()
 
         # Health check endpoint
         elif path == "/health":
@@ -151,6 +179,29 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Error serving gallery: {e}")
             self._send_error(500, f"Internal Server Error: {e}")
+
+    def _handle_events_history(self):
+        """Handle event history requests (FEAT-08: Polling fallback)."""
+        if not self.event_queue:
+            self._send_error(500, "Event queue not initialized")
+            return
+
+        try:
+            # Get history (last 100 events)
+            history = self.event_queue.get_history(limit=100)
+
+            response = {
+                "events": history,
+                "count": len(history),
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
+
+            self._send_json_response(response)
+            logger.debug(f"Served {len(history)} events from history")
+
+        except Exception as e:
+            logger.error(f"Error serving event history: {e}")
+            self._send_error(500, f"Error retrieving history: {e}")
 
     def _handle_sse_stream(self):
         """Handle Server-Sent Events stream for live updates."""

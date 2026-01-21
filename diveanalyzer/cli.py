@@ -496,8 +496,19 @@ def process(
             )
             click.echo(f"✓ Found {len(peaks)} splash peaks")
 
-            # Emit event for server
+            # FEAT-05: Emit status update for Phase 1
             if server:
+                server.emit("status_update", {
+                    "phase": "phase_1",
+                    "phase_name": "Audio Detection",
+                    "dives_found": len(peaks),
+                    "dives_expected": len(peaks),
+                    "thumbnails_ready": 0,
+                    "thumbnails_expected": 0,
+                    "processing_speed": 0,
+                    "elapsed_seconds": 0,
+                    "progress_percent": 33,
+                })
                 server.emit("splash_detection_complete", {
                     "peak_count": len(peaks),
                     "threshold_db": threshold,
@@ -529,8 +540,19 @@ def process(
                 motion_events = detect_motion_bursts(motion_video, sample_fps=5.0)
                 click.echo(f"  ✓ Found {len(motion_events)} motion bursts")
 
-                # Emit event for server
+                # FEAT-05: Emit status update for Phase 2
                 if server:
+                    server.emit("status_update", {
+                        "phase": "phase_2",
+                        "phase_name": "Motion Detection",
+                        "dives_found": len(motion_events),
+                        "dives_expected": len(peaks),
+                        "thumbnails_ready": 0,
+                        "thumbnails_expected": 0,
+                        "processing_speed": 0,
+                        "elapsed_seconds": 0,
+                        "progress_percent": 66,
+                    })
                     server.emit("motion_detection_complete", {
                         "burst_count": len(motion_events),
                         "proxy_height": proxy_height,
@@ -587,8 +609,19 @@ def process(
 
                 click.echo(f"  ✓ Found {len(person_departures)} person departures")
 
-                # Emit event for server
+                # FEAT-05: Emit status update for Phase 3
                 if server:
+                    server.emit("status_update", {
+                        "phase": "phase_3",
+                        "phase_name": "Person Detection",
+                        "dives_found": len(person_departures),
+                        "dives_expected": len(peaks),
+                        "thumbnails_ready": 0,
+                        "thumbnails_expected": 0,
+                        "processing_speed": 0,
+                        "elapsed_seconds": 0,
+                        "progress_percent": 90,
+                    })
                     server.emit("person_detection_complete", {
                         "departure_count": len(person_departures),
                         "confidence_threshold": 0.5,
@@ -660,8 +693,26 @@ def process(
 
             click.echo(f"✓ Final dive count: {len(dives)}")
 
-            # Emit event for server
+            # FEAT-05: Emit event for server with final detection status
             if server:
+                # Determine final phase
+                final_phase = "phase_1"
+                if enable_person and person_departures:
+                    final_phase = "phase_3"
+                elif enable_motion and motion_events:
+                    final_phase = "phase_2"
+
+                server.emit("status_update", {
+                    "phase": final_phase,
+                    "phase_name": "Detection Complete",
+                    "dives_found": len(dives),
+                    "dives_expected": len(dives),
+                    "thumbnails_ready": 0,
+                    "thumbnails_expected": len(dives),
+                    "processing_speed": 0,
+                    "elapsed_seconds": 0,
+                    "progress_percent": 95,
+                })
                 server.emit("dives_detected", {
                     "dive_count": len(dives),
                     "signal_type": signal_type,
@@ -692,8 +743,19 @@ def process(
             success_count = sum(1 for s, _, _ in results.values() if s)
             click.echo(f"✓ Successfully extracted {success_count}/{len(dives)} clips")
 
-            # Emit event for server
+            # FEAT-05: Emit extraction and final status update for server
             if server:
+                server.emit("status_update", {
+                    "phase": "complete",
+                    "phase_name": "Extraction Complete",
+                    "dives_found": success_count,
+                    "dives_expected": len(dives),
+                    "thumbnails_ready": success_count,
+                    "thumbnails_expected": len(dives),
+                    "processing_speed": 0,
+                    "elapsed_seconds": 0,
+                    "progress_percent": 100,
+                })
                 server.emit("extraction_complete", {
                     "total_dives": len(dives),
                     "successful": success_count,
