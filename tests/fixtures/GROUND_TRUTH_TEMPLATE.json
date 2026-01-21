@@ -1,0 +1,263 @@
+{
+  "metadata": {
+    "version": "2.0",
+    "created": "2026-01-20",
+    "format": "frame_indices (NOT seconds)",
+    "guide": "See GROUND_TRUTH_ANNOTATION_GUIDE.md for detailed definitions",
+    "key_definitions": {
+      "start_frame": "Frame index when diver's feet leave the platform/springboard (airborne)",
+      "splash_frame": "Frame index when diver's body (hands/head) first makes contact with water",
+      "end_frame": "Frame index when diver's body is fully submerged below water surface",
+      "fps": "Frames per second (all test fixtures are 30 fps)"
+    },
+    "conversion_note": "To get elapsed time in seconds: elapsed_time_sec = frame_index / fps. Example: frame 900 at 30fps = 900/30 = 30 seconds",
+    "conversion_tool": "Use: diveanalyzer/utils/frame_time_converter.py to validate and convert to seconds",
+    "validation": "All frame indices must satisfy: start_frame < splash_frame < end_frame"
+  },
+
+  "short_dive.mp4": {
+    "fps": 30,
+    "duration_sec": 39.77,
+    "total_frames": 1195,
+    "total_dives": 1,
+    "confidence_level": "high",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": 876,
+        "splash_frame": 898,
+        "end_frame": 914,
+        "dive_type": "forward",
+        "confidence": "high",
+        "notes": "Single clear dive. Frames 876-914 = 38 frames = 1.27 seconds. Conversion: 876/30=29.2s, 898/30=29.9s, 914/30=30.5s"
+      }
+    ],
+    "annotation_notes": "FRAME-BASED! With 30 fps, frame 30 = 1s, frame 900 = 30s. Your filled data: frames 876-914 (1.27s duration). Verify this matches expected 1-3s dive duration."
+  },
+
+  "multi_dive.mp4": {
+    "fps": 30,
+    "duration_sec": 299.62,
+    "total_frames": 8991,
+    "total_dives": "6",
+    "confidence_level": "medium",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": "342",
+        "splash_frame": "372",
+        "end_frame": "384",
+        "dive_type": "forward",
+        "notes": "diver behind another one but clear dive visible"
+      },
+      {
+        "id": 2,
+        "start_frame": "647",
+        "splash_frame": "673",
+        "end_frame": "675",
+        "dive_type": "forward",
+        "notes": "diver failed his dive and smacked the water flat"
+      },
+      {
+        "id": 3,
+        "start_frame": "1763",
+        "splash_frame": "1795",
+        "end_frame": "1807",
+        "dive_type": "forward",
+        "notes": "diver over-rotated a bit but good entry"
+      },
+	  {
+		"id": 4,
+		"start_frame": "2504",
+		"splash_frame": "2529",
+		"end_frame": "2541",
+		"dive_type": "forward",
+		"notes": "good dive, strong splash"
+	  },
+	  {
+		"id": 5,
+		"start_frame": "2823",
+		"splash_frame": "2851",
+		"end_frame": "2859",
+		"dive_type": "front",
+		"notes": "random guy in background jumping"
+	  },
+	  {
+		"id": 6,
+		"start_frame": "2947",
+		"splash_frame": "2978",
+		"end_frame": "2990",
+		"dive_type": "forward",
+		"notes": "diver executed a clear dive but close to previous one"
+	  }
+    ],
+    "annotation_notes": "only annotated the 2990 first frames. CRITICAL TEST - 37 audio peaks. Find actual dives visually. Real dives: splash_frame gaps should be 150+ frames apart (150 frames = 5 seconds @ 30fps). Total video = 8991 frames."
+  },
+
+  "noisy_audio.mp4": {
+    "fps": 30,
+    "duration_sec": 89.23,
+    "total_frames": 2679,
+    "total_dives": "2",
+    "confidence_level": "high",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": "412",
+        "splash_frame": "449",
+        "end_frame": "458",
+        "dive_type": "forward twister",
+        "noise_level": "low",
+        "notes": "diver failed the hurdle once earlier and this may have caused a loud noise and a false positive"
+      },
+	  {
+		"id": 2,
+		"start_frame": "486",
+		"splash_frame": "512",
+		"end_frame": "519",
+		"dive_type": "front",
+		"noise_level": "high",
+		"notes": "random guy in background jumping"
+	  }
+    ],
+    "annotation_notes": "annotated only the first 519 frames. Record using FRAME INDICES. Background noise present. Total video = 2679 frames = 89.3 seconds @ 30fps."
+  },
+
+  "edge_cases/back_to_back.mp4": {
+    "fps": 30,
+    "duration_sec": 59.9,
+    "total_frames": 1799,
+    "total_dives": 2,
+    "dive_spacing": "FILL_ME_IN (should be <150 frames between splashes = <5 seconds)",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": "FILL_ME_IN",
+        "splash_frame": "FILL_ME_IN",
+        "end_frame": "FILL_ME_IN",
+        "notes": ""
+      },
+      {
+        "id": 2,
+        "start_frame": "FILL_ME_IN",
+        "splash_frame": "FILL_ME_IN",
+        "end_frame": "FILL_ME_IN",
+        "notes": "Should be LESS than 150 frames (~5s) after first splash"
+      }
+    ],
+    "annotation_notes": "Two VERY CLOSE dives. Use FRAME INDICES. Gap = dive2_splash_frame - dive1_splash_frame (should be <150). Total = 1799 frames."
+  },
+
+  "edge_cases/no_audio.mp4": {
+    "fps": 30,
+    "duration_sec": 39.77,
+    "total_frames": 1195,
+    "total_dives": "FILL_ME_IN (should match short_dive.mp4)",
+    "no_audio_track": true,
+    "detection_method": "motion_only (Phase 2)",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": "FILL_ME_IN",
+        "splash_frame": "FILL_ME_IN",
+        "end_frame": "FILL_ME_IN",
+        "notes": "Should match frame indices from short_dive.mp4 EXACTLY (same content, audio removed)"
+      }
+    ],
+    "annotation_notes": "Identical to short_dive.mp4 but NO AUDIO. Use MOTION to find dive. Frame indices should be identical. Total = 1195 frames."
+  },
+
+  "edge_cases/failed_dive.mp4": {
+    "fps": 30,
+    "duration_sec": 39.76,
+    "total_frames": 1195,
+    "total_dives": 0,
+    "dives": [],
+    "motion_bursts": [
+      {
+        "id": 1,
+        "start_frame": "FILL_ME_IN (if motion visible)",
+        "end_frame": "FILL_ME_IN",
+        "splash_present": false,
+        "reason": "Person jumped/moved but did not enter water",
+        "notes": ""
+      }
+    ],
+    "annotation_notes": "FAILED DIVE: motion occurs but NO SPLASH. Use FRAME INDICES for motion timing. Mark splash_present=false. Total = 1195 frames."
+  },
+
+  "edge_cases/false_positive.mp4": {
+    "fps": 30,
+    "duration_sec": 29.5,
+    "total_frames": 887,
+    "total_dives": 0,
+    "dives": [],
+    "false_positives": [
+      {
+        "id": 1,
+        "frame_index": "FILL_ME_IN (frame where loud sound occurs)",
+        "reason": "equipment crash|background noise|door slam|other",
+        "severity": "loud|medium|quiet",
+        "person_visible": false,
+        "motion_detected": false,
+        "notes": "Describe what causes the sound"
+      }
+    ],
+    "annotation_notes": "NO ACTUAL DIVE - Loud noise only, no diver visible. Use FRAME INDEX to mark sound timing. Total = 887 frames = 29.5 seconds @ 30fps."
+  },
+
+  "edge_cases/very_short.mp4": {
+    "fps": 30,
+    "duration_sec": 2.17,
+    "total_frames": 67,
+    "total_dives": "FILL_ME_IN (hard to fit in 3 seconds!)",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": "FILL_ME_IN",
+        "splash_frame": "FILL_ME_IN",
+        "end_frame": "FILL_ME_IN",
+        "notes": "Very short clip - entire dive in <3 seconds. Total video = only 67 frames!"
+      }
+    ],
+    "annotation_notes": "TINY VIDEO: 2.17 seconds = 67 frames total @ 30fps. Use FRAME INDICES (0-67). Typical dive = 30-90 frames."
+  },
+
+  "example_completed": {
+    "fps": 30,
+    "duration_sec": 300,
+    "total_frames": 9000,
+    "total_dives": 3,
+    "confidence_level": "high",
+    "dives": [
+      {
+        "id": 1,
+        "start_frame": 300,
+        "splash_frame": 450,
+        "end_frame": 600,
+        "dive_type": "forward",
+        "confidence": "high",
+        "notes": "Frames 300-600 = 300 frames = 10 seconds total ✓. Conversions: 300/30=10s, 450/30=15s, 600/30=20s"
+      },
+      {
+        "id": 2,
+        "start_frame": 1500,
+        "splash_frame": 1650,
+        "end_frame": 1800,
+        "dive_type": "backward",
+        "confidence": "high",
+        "notes": "Frames 1500-1800 = 300 frames = 10s. Gap from dive1: 1650-450=1200 frames = 40 seconds ✓"
+      },
+      {
+        "id": 3,
+        "start_frame": 4500,
+        "splash_frame": 4650,
+        "end_frame": 4800,
+        "dive_type": "unknown",
+        "confidence": "medium",
+        "notes": "Frames 4500-4800 = 300 frames. Gap from dive2: 4650-1650=3000 frames = 100 seconds ✓"
+      }
+    ],
+    "annotation_notes": "EXAMPLE using FRAME INDICES. Validation: start < splash < end ✓, durations 30-90 frames (1-3s) ✓, gaps >150 frames (5s) ✓. Use frame_time_converter.py to convert to seconds and validate."
+  }
+}

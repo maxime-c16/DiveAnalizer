@@ -109,14 +109,23 @@ def merge_overlapping_dives(
     min_gap: float = 5.0,
 ) -> List[DiveEvent]:
     """
-    Merge dives that are too close together.
+    Merge dives that are too close together (based on splash times).
 
-    When dives are detected very close together (< min_gap seconds),
+    When dives are detected very close together (< min_gap seconds between splashes),
     they're likely part of the same dive or back-to-back dives.
+
+    IMPORTANT: This uses splash times (actual dive events), not clip start times.
+    This is critical because pre-splash buffers can be larger than min_gap,
+    causing overlapping clips even for separate dives.
+
+    Example:
+        Peak 1 at 0s: clip -10 to +3s
+        Peak 2 at 5s: clip -5 to +8s
+        Clips overlap, but splashes are 5s apart → don't merge by splash time!
 
     Args:
         dives: List of DiveEvent objects
-        min_gap: Minimum gap in seconds between dives (default 5s)
+        min_gap: Minimum gap in seconds between splash times (default 5s)
 
     Returns:
         Merged list of DiveEvent objects
@@ -124,18 +133,22 @@ def merge_overlapping_dives(
     if not dives:
         return []
 
-    # Sort by start time
-    dives = sorted(dives, key=lambda d: d.start_time)
+    # Sort by splash time (actual dive events), not clip start time
+    dives = sorted(dives, key=lambda d: d.splash_time)
     merged = [dives[0]]
 
     for dive in dives[1:]:
         prev = merged[-1]
-        # Check if close enough to merge
-        if dive.start_time < prev.end_time + min_gap:
-            # Merge: extend previous dive and keep highest confidence
+        # Check if splashes are close enough to merge
+        # Two splashes within min_gap seconds = same dive or back-to-back dives
+        gap_between_splashes = dive.splash_time - prev.splash_time
+
+        if gap_between_splashes < min_gap:
+            # Merge: extend clip to cover both dives, keep strongest confidence
+            prev.start_time = min(prev.start_time, dive.start_time)
             prev.end_time = max(prev.end_time, dive.end_time)
             prev.confidence = max(prev.confidence, dive.confidence)
-            prev.notes = f"merged with {dive.splash_time:.1f}s"
+            prev.notes = f"merged with {dive.splash_time:.1f}s (gap {gap_between_splashes:.2f}s)"
         else:
             merged.append(dive)
 

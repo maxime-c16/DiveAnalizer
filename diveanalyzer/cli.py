@@ -25,6 +25,8 @@ from .extraction.ffmpeg import extract_multiple_dives, get_video_duration, forma
 from .extraction.proxy import generate_proxy, is_proxy_generation_needed
 from .storage.cache import CacheManager
 from .storage.icloud import find_icloud_videos
+from .utils.system_profiler import SystemProfiler
+from .storage.cleanup import cleanup_expired_cache, get_cache_stats, check_disk_space
 
 # Lazy imports for audio (requires librosa)
 def get_audio_functions():
@@ -111,6 +113,114 @@ def cli():
 
 
 @cli.command()
+@click.option(
+    "--refresh",
+    is_flag=True,
+    default=False,
+    help="Force refresh system profile (ignores cache)",
+)
+def profile(refresh: bool):
+    """Show system profile and recommended detection phase."""
+    click.echo(f"🎬 DiveAnalyzer v{__version__}\n")
+
+    profiler = SystemProfiler()
+    sys_profile = profiler.get_profile(refresh=refresh)
+
+    click.echo(sys_profile)
+    click.echo()
+    click.echo("📊 Interpretation:")
+    click.echo(f"  • Phase 1: ~5s processing, 0.82 confidence (audio-only)")
+    click.echo(f"  • Phase 2: ~15s processing, 0.92 confidence (audio + motion)")
+    click.echo(f"  • Phase 3: ~{sys_profile.phase_3_estimate_sec:.0f}s processing, 0.96 confidence (audio + motion + person)")
+    click.echo()
+    click.echo("ℹ️  Run 'diveanalyzer process video.mov' to analyze a video.")
+    click.echo(f"   It will automatically use Phase {sys_profile.recommended_phase}.")
+    click.echo("   Override with --force-phase=1|2|3 if desired.")
+
+
+@cli.group()
+def cache():
+    """Manage cache (audio, proxy, metadata)."""
+    pass
+
+
+@cache.command()
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be deleted without actually deleting",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Print details about deleted files",
+)
+def cleanup(dry_run: bool, verbose: bool):
+    """Delete cache files older than 7 days."""
+    click.echo(f"🎬 DiveAnalyzer v{__version__}\n")
+
+    if dry_run:
+        click.echo("🔍 Checking for expired cache entries (dry run)...")
+        stats = cleanup_expired_cache(dry_run=True, verbose=verbose)
+        click.echo()
+        click.echo(f"Would delete: {stats['expired_count']} entries")
+
+        if stats["expired_count"] == 0:
+            click.echo("✓ No expired entries found")
+        else:
+            click.echo()
+            click.echo("To actually delete them, run: diveanalyzer cache cleanup")
+    else:
+        click.echo("🧹 Cleaning up expired cache...")
+        stats = cleanup_expired_cache(dry_run=False, verbose=verbose)
+        click.echo()
+        click.echo(f"✓ Deleted: {stats['expired_count']} entries")
+        click.echo(f"  Freed: {stats['freed_size_mb']:.1f} MB")
+        click.echo(f"  Cache size: {stats['total_size_before_mb']:.1f} MB → {stats['total_size_after_mb']:.1f} MB")
+
+
+@cache.command()
+@click.option(
+    "--detailed",
+    is_flag=True,
+    default=False,
+    help="Show breakdown by cache type",
+)
+def stats(detailed: bool):
+    """Show cache usage statistics."""
+    click.echo(f"🎬 DiveAnalyzer v{__version__}\n")
+
+    # Get cache stats
+    cache_stats = get_cache_stats(detailed=detailed)
+    disk_info = check_disk_space()
+
+    click.echo("💾 Cache Statistics:")
+    click.echo(f"  Total entries: {cache_stats['total_entries']}")
+    click.echo(f"  Valid entries: {cache_stats['valid_entries']}")
+    click.echo(f"  Expired entries: {cache_stats['expired_entries']}")
+    click.echo(f"  Total size: {cache_stats['total_size_mb']:.1f} MB")
+
+    if detailed and "by_type" in cache_stats:
+        click.echo()
+        click.echo("  Breakdown by type:")
+        for type_name, type_stats in cache_stats["by_type"].items():
+            click.echo(f"    • {type_name:10s}: {type_stats['count']:3d} files, {type_stats['size_mb']:6.1f} MB")
+
+    click.echo()
+    click.echo("💿 Disk Space:")
+    click.echo(f"  Total disk: {disk_info['total_gb']:.1f} GB")
+    click.echo(f"  Used: {disk_info['used_gb']:.1f} GB ({disk_info['percent_full']:.1f}%)")
+    click.echo(f"  Free: {disk_info['free_gb']:.1f} GB")
+
+    if disk_info["status"] == "LOW_SPACE":
+        click.echo()
+        click.secho(f"  ⚠️  {disk_info['warning']}", fg="yellow")
+
+
+@cli.command()
 @click.argument("video_path", type=click.Path(exists=True))
 @click.option(
     "-o",
@@ -194,6 +304,18 @@ def cli():
     default=16,
     help="Batch size for frame inference (16-32 recommended)",
 )
+@click.option(
+    "--force-phase",
+    type=click.Choice(["1", "2", "3"], case_sensitive=False),
+    default=None,
+    help="Force specific detection phase (1=audio, 2=audio+motion, 3=full). Overrides auto-selection.",
+)
+@click.option(
+    "--auto-select",
+    is_flag=True,
+    default=True,
+    help="Enable automatic phase selection based on system capabilities (default: True)",
+)
 def process(
     video_path: str,
     output: str,
@@ -209,6 +331,8 @@ def process(
     force_cpu: bool,
     use_fp16: bool,
     batch_size: int,
+    force_phase: Optional[str],
+    auto_select: bool,
 ):
     """
     Process a video and extract all detected dives.
@@ -245,6 +369,46 @@ def process(
         except Exception as e:
             click.echo(f"⚠️  Could not determine video length: {e}")
             duration = None
+
+        # Adaptive Phase Selection (Task 1.11)
+        click.echo()
+        selected_phase = 1  # Default to Phase 1
+        if auto_select and not force_phase:
+            click.echo("🔍 Analyzing system capabilities...")
+            try:
+                profiler = SystemProfiler()
+                sys_profile = profiler.get_profile()
+                selected_phase = sys_profile.recommended_phase
+
+                click.echo(f"   System Score: {sys_profile.system_score}/10")
+                click.echo(f"   CPU: {sys_profile.cpu_count}-core @ {sys_profile.cpu_freq_ghz:.1f} GHz")
+                click.echo(f"   RAM: {sys_profile.total_ram_gb:.1f} GB")
+                click.echo(f"   GPU: {sys_profile.gpu_type.upper()}")
+                click.echo()
+                click.echo(f"   ✓ Auto-selected Phase {selected_phase}")
+                click.echo(f"   Estimated time: ~{sys_profile.phase_3_estimate_sec if selected_phase == 3 else (15 if selected_phase == 2 else 5):.0f}s")
+                click.echo(f"   Expected confidence: {(0.96 if selected_phase == 3 else (0.92 if selected_phase == 2 else 0.82)):.0%}")
+
+                if verbose:
+                    click.echo()
+                    click.echo(f"   Phase details:")
+                    click.echo(f"   • Phase 1: 5s, 0.82 confidence")
+                    click.echo(f"   • Phase 2: 15s, 0.92 confidence")
+                    click.echo(f"   • Phase 3: {sys_profile.phase_3_estimate_sec:.0f}s, 0.96 confidence")
+            except Exception as e:
+                click.echo(f"   ⚠️  Could not profile system: {e}")
+                selected_phase = 1
+        elif force_phase:
+            selected_phase = int(force_phase)
+            click.echo(f"⚠️  Forced Phase {selected_phase} (user override)")
+
+        # Apply phase selection to enable_motion and enable_person
+        if selected_phase >= 2 and not force_phase:
+            enable_motion = True
+        if selected_phase >= 3 and not force_phase:
+            enable_person = True
+
+        click.echo()
 
         # Load audio functions
         try:
