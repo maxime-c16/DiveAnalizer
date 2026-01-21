@@ -742,6 +742,225 @@ class DiveGalleryGenerator:
             margin-top: 4px;
         }}
 
+        /* FEAT-02: Connection Status Indicator */
+        .connection-status {{
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            z-index: 500;
+            font-size: 13px;
+            font-weight: 500;
+        }}
+
+        .connection-status.connected {{
+            background: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+        }}
+
+        .connection-status.disconnected {{
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+        }}
+
+        .connection-status.connecting {{
+            background: #fff3e0;
+            border-left: 4px solid #FF9800;
+        }}
+
+        .status-indicator {{
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }}
+
+        .status-indicator.connected {{
+            background: #4CAF50;
+        }}
+
+        .status-indicator.disconnected {{
+            background: #f44336;
+            animation: none;
+        }}
+
+        .status-indicator.connecting {{
+            background: #FF9800;
+        }}
+
+        @keyframes pulse {{
+            0%, 100% {{
+                opacity: 1;
+            }}
+            50% {{
+                opacity: 0.5;
+            }}
+        }}
+
+        .status-address {{
+            color: #666;
+            font-size: 12px;
+            margin-left: 4px;
+        }}
+
+        /* FEAT-02: Event Log Display */
+        .event-log-container {{
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 350px;
+            max-height: 300px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 499;
+            border: 1px solid #e0e0e0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }}
+
+        .event-log-container.show {{
+            display: flex;
+        }}
+
+        .event-log-header {{
+            padding: 10px 15px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            font-size: 13px;
+            color: #333;
+        }}
+
+        .event-log-close {{
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            color: #999;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+
+        .event-log-close:hover {{
+            color: #333;
+        }}
+
+        .event-log {{
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            font-size: 11px;
+            font-family: monospace;
+            line-height: 1.4;
+        }}
+
+        .event-log-entry {{
+            padding: 6px 8px;
+            margin-bottom: 6px;
+            border-radius: 3px;
+            background: #f9f9f9;
+            border-left: 3px solid #999;
+            color: #555;
+            word-break: break-word;
+        }}
+
+        .event-log-entry.info {{
+            border-left-color: #2196F3;
+            background: #e3f2fd;
+            color: #1565C0;
+        }}
+
+        .event-log-entry.success {{
+            border-left-color: #4CAF50;
+            background: #e8f5e9;
+            color: #2e7d32;
+        }}
+
+        .event-log-entry.warning {{
+            border-left-color: #FF9800;
+            background: #fff3e0;
+            color: #e65100;
+        }}
+
+        .event-log-entry.error {{
+            border-left-color: #f44336;
+            background: #ffebee;
+            color: #c62828;
+        }}
+
+        .event-log-timestamp {{
+            font-size: 10px;
+            opacity: 0.7;
+            margin-right: 4px;
+        }}
+
+        .toggle-event-log {{
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 498;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }}
+
+        .toggle-event-log:hover {{
+            transform: scale(1.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }}
+
+        .toggle-event-log.hidden {{
+            display: none;
+        }}
+
+        @media (max-width: 640px) {{
+            .connection-status {{
+                top: 10px;
+                right: 10px;
+                font-size: 12px;
+                padding: 8px 12px;
+            }}
+
+            .event-log-container {{
+                bottom: 10px;
+                right: 10px;
+                width: calc(100% - 20px);
+                max-height: 250px;
+            }}
+
+            .toggle-event-log {{
+                bottom: 10px;
+                right: 10px;
+            }}
+        }}
+
         @media (max-width: 640px) {{
             .modal-container {{
                 width: 95vw;
@@ -888,6 +1107,25 @@ class DiveGalleryGenerator:
         </div>
     </div>
 
+    <!-- FEAT-02: Connection Status Indicator -->
+    <div class="connection-status" id="connectionStatus">
+        <span class="status-indicator connecting"></span>
+        <span id="statusText">Connecting...</span>
+        <span class="status-address" id="statusAddress"></span>
+    </div>
+
+    <!-- FEAT-02: Event Log Display -->
+    <div class="event-log-container" id="eventLogContainer">
+        <div class="event-log-header">
+            <span>Live Events</span>
+            <button class="event-log-close" id="closeEventLog">&times;</button>
+        </div>
+        <div class="event-log" id="eventLog"></div>
+    </div>
+
+    <!-- FEAT-02: Toggle Event Log Button -->
+    <button class="toggle-event-log" id="toggleEventLog" title="Show/hide live events">📋</button>
+
     <!-- Detailed Review Modal -->
     <div class="modal-overlay" id="diveModal">
         <div class="modal-container">
@@ -935,9 +1173,278 @@ class DiveGalleryGenerator:
         let currentDiveIndex = 0;
         let cards = [];
 
+        // ===== FEAT-02: SSE Real-Time Event Consumer =====
+        class EventStreamConsumer {{
+            constructor(serverUrl = null) {{
+                this.serverUrl = serverUrl || this._detectServerUrl();
+                this.eventSource = null;
+                this.isConnected = false;
+                this.reconnectAttempts = 0;
+                this.maxReconnectAttempts = 5;
+                this.reconnectDelay = 2000;
+                this.eventLog = [];
+                this.maxLogEntries = 100;
+            }}
+
+            _detectServerUrl() {{
+                // Try to detect server URL from current location
+                // Default: http://localhost:8765
+                if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {{
+                    // If running on a different host, use that host
+                    return `http://${{window.location.hostname}}:8765`;
+                }}
+                return 'http://localhost:8765';
+            }}
+
+            connect() {{
+                console.log(`SSE: Attempting to connect to ${{this.serverUrl}}/events`);
+                this._updateStatus('connecting', `Connecting to ${{this.serverUrl}}`);
+
+                try {{
+                    this.eventSource = new EventSource(`${{this.serverUrl}}/events`);
+
+                    // Handle different event types
+                    const eventTypes = [
+                        'connected',
+                        'splash_detection_complete',
+                        'motion_detection_complete',
+                        'person_detection_complete',
+                        'dives_detected',
+                        'extraction_complete',
+                        'processing_complete'
+                    ];
+
+                    eventTypes.forEach(eventType => {{
+                        this.eventSource.addEventListener(eventType, (event) => {{
+                            this._handleEvent(eventType, event);
+                        }});
+                    }});
+
+                    // Handle generic message events
+                    this.eventSource.addEventListener('message', (event) => {{
+                        try {{
+                            const data = JSON.parse(event.data);
+                            this._handleEvent('message', event);
+                        }} catch (e) {{
+                            console.warn('SSE: Could not parse message event:', e);
+                        }}
+                    }});
+
+                    // Handle connection open
+                    this.eventSource.onopen = () => {{
+                        console.log('SSE: Connection opened');
+                        this.isConnected = true;
+                        this.reconnectAttempts = 0;
+                        this._updateStatus('connected', 'Connected');
+                        this._logEvent('connected', 'Connected to server', 'success');
+                    }};
+
+                    // Handle connection errors
+                    this.eventSource.onerror = (error) => {{
+                        console.error('SSE: Connection error:', error);
+                        this._handleConnectionError();
+                    }};
+
+                }} catch (error) {{
+                    console.error('SSE: Failed to create EventSource:', error);
+                    this._handleConnectionError();
+                }}
+            }}
+
+            _handleEvent(eventType, event) {{
+                try {{
+                    const data = JSON.parse(event.data);
+                    console.log(`SSE: Event received - ${{eventType}}:`, data);
+
+                    // Update last event timestamp and message
+                    this._updateLatestEvent(eventType, data);
+
+                    // Log the event
+                    this._logEvent(
+                        eventType,
+                        `${{eventType}}: ${{JSON.stringify(data).substring(0, 100)}}`,
+                        this._getEventLogType(eventType)
+                    );
+
+                }} catch (error) {{
+                    console.warn(`SSE: Error parsing event data:`, error);
+                }}
+            }}
+
+            _handleConnectionError() {{
+                this.isConnected = false;
+                this._updateStatus('disconnected', 'Disconnected');
+                this._logEvent('error', 'Connection lost', 'error');
+
+                if (this.reconnectAttempts < this.maxReconnectAttempts) {{
+                    this.reconnectAttempts++;
+                    const delay = this.reconnectDelay * this.reconnectAttempts;
+                    console.log(`SSE: Attempting to reconnect in ${{delay}}ms (attempt ${{this.reconnectAttempts}}/${{this.maxReconnectAttempts}})`);
+                    this._updateStatus('connecting', `Reconnecting... (${{this.reconnectAttempts}}/${{this.maxReconnectAttempts}})`);
+
+                    setTimeout(() => {{
+                        if (!this.isConnected) {{
+                            this.connect();
+                        }}
+                    }}, delay);
+                }} else {{
+                    console.error('SSE: Max reconnection attempts exceeded');
+                    this._updateStatus('disconnected', 'Server not available');
+                    this._logEvent('error', 'Server not available, using local mode', 'warning');
+                }}
+            }}
+
+            _updateLatestEvent(eventType, data) {{
+                requestAnimationFrame(() => {{
+                    const statusEl = document.getElementById('statusText');
+                    if (statusEl) {{
+                        const timestamp = new Date().toLocaleTimeString();
+                        statusEl.textContent = `${{timestamp}} - ${{eventType}}`;
+                    }}
+                }});
+            }}
+
+            _updateStatus(status, message) {{
+                requestAnimationFrame(() => {{
+                    const statusEl = document.getElementById('connectionStatus');
+                    if (!statusEl) return;
+
+                    // Update status classes
+                    statusEl.classList.remove('connected', 'disconnected', 'connecting');
+                    statusEl.classList.add(status);
+
+                    // Update indicator
+                    const indicator = statusEl.querySelector('.status-indicator');
+                    if (indicator) {{
+                        indicator.classList.remove('connected', 'disconnected', 'connecting');
+                        indicator.classList.add(status);
+                    }}
+
+                    // Update text
+                    const textEl = document.getElementById('statusText');
+                    if (textEl) {{
+                        textEl.textContent = message;
+                    }}
+
+                    // Update address
+                    const addressEl = document.getElementById('statusAddress');
+                    if (addressEl) {{
+                        addressEl.textContent = this.serverUrl;
+                    }}
+                }});
+            }}
+
+            _logEvent(type, message, logType = 'info') {{
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString();
+                const entry = {{ type, message, logType, timestamp: timeStr }};
+
+                this.eventLog.push(entry);
+                if (this.eventLog.length > this.maxLogEntries) {{
+                    this.eventLog.shift();
+                }}
+
+                requestAnimationFrame(() => {{
+                    this._renderEventLog();
+                }});
+            }}
+
+            _renderEventLog() {{
+                const logEl = document.getElementById('eventLog');
+                if (!logEl) return;
+
+                logEl.innerHTML = this.eventLog.map(entry => `
+                    <div class="event-log-entry ${{entry.logType}}">
+                        <span class="event-log-timestamp">${{entry.timestamp}}</span>
+                        <span>${{entry.message}}</span>
+                    </div>
+                `).join('');
+
+                // Auto-scroll to bottom
+                logEl.scrollTop = logEl.scrollHeight;
+            }}
+
+            _getEventLogType(eventType) {{
+                if (eventType === 'connected') return 'success';
+                if (eventType === 'error') return 'error';
+                if (eventType.includes('complete') || eventType.includes('detected')) return 'info';
+                return 'info';
+            }}
+
+            disconnect() {{
+                if (this.eventSource) {{
+                    this.eventSource.close();
+                    this.eventSource = null;
+                    this.isConnected = false;
+                    console.log('SSE: Disconnected');
+                    this._updateStatus('disconnected', 'Disconnected');
+                }}
+            }}
+
+            getLogEntries() {{
+                return this.eventLog;
+            }}
+
+            clearLog() {{
+                this.eventLog = [];
+                this._renderEventLog();
+            }}
+        }}
+
+        // Initialize event consumer
+        let eventConsumer = null;
+
+        function initializeEventConsumer() {{
+            // Detect server URL
+            const serverUrl = window.location.hostname === 'file:'
+                ? 'http://localhost:8765'
+                : `http://${{window.location.hostname}}:8765`;
+
+            eventConsumer = new EventStreamConsumer(serverUrl);
+
+            // Set up event log controls
+            const toggleBtn = document.getElementById('toggleEventLog');
+            const closeBtn = document.getElementById('closeEventLog');
+            const container = document.getElementById('eventLogContainer');
+
+            if (toggleBtn) {{
+                toggleBtn.addEventListener('click', () => {{
+                    if (container.classList.contains('show')) {{
+                        container.classList.remove('show');
+                        toggleBtn.classList.add('hidden');
+                    }} else {{
+                        container.classList.add('show');
+                        toggleBtn.classList.remove('hidden');
+                    }}
+                }});
+            }}
+
+            if (closeBtn) {{
+                closeBtn.addEventListener('click', () => {{
+                    container.classList.remove('show');
+                    if (toggleBtn) {{
+                        toggleBtn.classList.remove('hidden');
+                    }}
+                }});
+            }}
+
+            // Try to connect to event stream
+            try {{
+                eventConsumer.connect();
+            }} catch (error) {{
+                console.warn('SSE: Could not initialize event consumer:', error);
+                // Continue anyway - gallery works without live events
+            }}
+        }}
+
+        // ===== END FEAT-02 =====
+
         // Initialize after DOM is ready
         function initGallery() {{
             cards = Array.from(document.querySelectorAll('.dive-card'));
+
+            // FEAT-02: Initialize real-time event consumer
+            initializeEventConsumer();
 
             // Make entire card clickable to toggle selection or open modal
             cards.forEach((card, index) => {{
