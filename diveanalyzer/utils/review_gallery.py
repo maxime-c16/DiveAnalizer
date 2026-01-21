@@ -810,6 +810,95 @@ class DiveGalleryGenerator:
             margin-left: 4px;
         }}
 
+        /* FEAT-03: Placeholder Styles for Skeleton Loading */
+        .placeholder-card {{
+            animation: fadeIn 0.2s ease-in;
+        }}
+
+        @keyframes fadeIn {{
+            from {{
+                opacity: 0;
+                transform: translateY(10px);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0);
+            }}
+        }}
+
+        .placeholder-thumbnails {{
+            display: flex;
+            height: 200px;
+            gap: 3px;
+            background: #f5f5f5;
+            overflow: hidden;
+        }}
+
+        .placeholder-thumbnail {{
+            flex: 1;
+            background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+            border-radius: 2px;
+        }}
+
+        @keyframes shimmer {{
+            0% {{
+                background-position: 200% 0;
+            }}
+            100% {{
+                background-position: -200% 0;
+            }}
+        }}
+
+        .placeholder-info {{
+            padding: 15px;
+        }}
+
+        .placeholder-number {{
+            height: 16px;
+            background: #d0d0d0;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            width: 80px;
+            animation: shimmer 2s infinite;
+        }}
+
+        .placeholder-details {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }}
+
+        .placeholder-detail {{
+            height: 12px;
+            background: #e8e8e8;
+            border-radius: 3px;
+            animation: shimmer 2s infinite;
+        }}
+
+        .placeholder-confidence {{
+            height: 20px;
+            width: 60px;
+            background: #d0d0d0;
+            border-radius: 4px;
+            margin-top: 8px;
+            animation: shimmer 2s infinite;
+        }}
+
+        .empty-gallery-message {{
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+            font-size: 16px;
+            grid-column: 1 / -1;
+        }}
+
+        .empty-gallery-message-icon {{
+            font-size: 48px;
+            margin-bottom: 10px;
+        }}
+
         /* FEAT-02: Event Log Display */
         .event-log-container {{
             display: none;
@@ -1005,6 +1094,11 @@ class DiveGalleryGenerator:
         </div>
 
         <div class="gallery" id="gallery">
+            <!-- FEAT-03: Initial empty gallery message -->
+            <div class="empty-gallery-message" id="emptyMessage">
+                <div class="empty-gallery-message-icon">⏳</div>
+                <div>Waiting for dives...</div>
+            </div>
 """
 
         # Add dive cards
@@ -1266,6 +1360,16 @@ class DiveGalleryGenerator:
                         this._getEventLogType(eventType)
                     );
 
+                    // FEAT-03: Handle dive_detected events to render placeholders
+                    if (eventType === 'dive_detected' && data.dive_index !== undefined) {{
+                        renderDiveCardPlaceholder({{
+                            dive_index: data.dive_index,
+                            dive_id: data.dive_id || `dive_${{data.dive_index}}`,
+                            duration: data.duration || 0,
+                            confidence: data.confidence || 0
+                        }});
+                    }}
+
                 }} catch (error) {{
                     console.warn(`SSE: Error parsing event data:`, error);
                 }}
@@ -1390,6 +1494,65 @@ class DiveGalleryGenerator:
                 this._renderEventLog();
             }}
         }}
+
+        // ===== FEAT-03: Dive Card Placeholder System =====
+
+        /**
+         * Render a placeholder dive card with shimmer animation
+         * @param {{dive_index: number, dive_id: string, duration: number, confidence: number}} diveData
+         */
+        function renderDiveCardPlaceholder(diveData) {{
+            const gallery = document.getElementById('gallery');
+            if (!gallery) {{
+                console.warn('Gallery element not found');
+                return;
+            }}
+
+            // Remove empty gallery message on first card
+            const emptyMessage = document.getElementById('emptyMessage');
+            if (emptyMessage && document.querySelectorAll('.dive-card:not(.placeholder-card)').length === 0) {{
+                emptyMessage.remove();
+                console.log('FEAT-03: Empty gallery message removed');
+            }}
+
+            // Create placeholder card element
+            const card = document.createElement('div');
+            card.className = 'dive-card placeholder-card';
+            card.dataset.id = diveData.dive_index;
+
+            // Create placeholder content
+            const placeholderHTML = `
+                <div class="checkbox">
+                    <input type="checkbox" class="dive-checkbox">
+                </div>
+                <div class="placeholder-thumbnails">
+                    <div class="placeholder-thumbnail"></div>
+                    <div class="placeholder-thumbnail"></div>
+                    <div class="placeholder-thumbnail"></div>
+                </div>
+                <div class="placeholder-info">
+                    <div class="placeholder-number"></div>
+                    <div class="placeholder-details">
+                        <div class="placeholder-detail"></div>
+                        <div class="placeholder-detail"></div>
+                    </div>
+                    <div class="placeholder-confidence"></div>
+                </div>
+            `;
+
+            card.innerHTML = placeholderHTML;
+
+            // Add to gallery with smooth fade-in
+            gallery.appendChild(card);
+
+            // Update gallery with new card (exclude placeholder cards from cards array)
+            cards = Array.from(document.querySelectorAll('.dive-card:not(.placeholder-card)'));
+
+            // Log for debugging
+            console.log(`FEAT-03: Placeholder card rendered for dive ${diveData.dive_index}, total cards: ${document.querySelectorAll('.dive-card').length}`);
+        }}
+
+        // ===== END FEAT-03 =====
 
         // Initialize event consumer
         let eventConsumer = null;

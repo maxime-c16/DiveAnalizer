@@ -5,6 +5,7 @@ Main entry point for the application.
 """
 
 import sys
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -329,6 +330,12 @@ def stats(detailed: bool):
     default=8765,
     help="Port for HTTP server (default: 8765)",
 )
+@click.option(
+    "--no-open",
+    is_flag=True,
+    default=False,
+    help="Don't automatically open browser when --enable-server is used",
+)
 def process(
     video_path: str,
     output: str,
@@ -348,6 +355,7 @@ def process(
     auto_select: bool,
     enable_server: bool,
     server_port: int,
+    no_open: bool,
 ):
     """
     Process a video and extract all detected dives.
@@ -395,6 +403,16 @@ def process(
                 if server.start():
                     click.echo(f"✓ Server running at {server.get_url()}")
                     click.echo(f"  Events: {server.get_events_url()}")
+
+                    # FEAT-06: Auto-launch browser if --no-open not set
+                    if not no_open:
+                        try:
+                            webbrowser.open(f"http://localhost:{server_port}")
+                            click.echo(f"🌐 Opening browser at http://localhost:{server_port}")
+                        except Exception as e:
+                            # Silent fail - don't crash on browser open errors
+                            if verbose:
+                                click.echo(f"ℹ️  Could not open browser automatically: {e}")
                 else:
                     click.echo("⚠️  Failed to start server, continuing without live review")
                     server = None
