@@ -815,6 +815,18 @@ def process(
             if server and success_count > 0:
                 click.echo(f"\n🖼️  Generating thumbnails in background...")
 
+                # Emit status update so browser dashboard shows dive counts
+                server.emit("status_update", {
+                    "phase": "thumbnail_generation",
+                    "phase_name": "Generating Thumbnails",
+                    "dives_found": success_count,
+                    "dives_expected": success_count,
+                    "thumbnails_ready": 0,
+                    "thumbnails_expected": success_count,
+                    "progress_percent": 0,
+                    "message": f"Generating thumbnails for {success_count} dive{'s' if success_count != 1 else ''}...",
+                })
+
                 # Prepare dive list for background generation
                 dive_list_for_thumbnails = [
                     (dive_num, str(output_dir / f"dive_{dive_num:03d}.mp4"))
@@ -839,27 +851,31 @@ def process(
                 server.stop()
             sys.exit(1)
 
-        # Emit final event and shutdown server
+        # Emit final event and keep server running for live updates
         if server:
             server.emit("processing_complete", {
                 "status": "success",
                 "output_directory": str(output_dir),
             })
 
-            # FEAT-07: Give background thumbnail generation time to complete
-            # Timeline: Each thumbnail takes ~1-2s to generate (8 frames @ 720x1280)
-            # Wait longer if we have many dives to extract
+            # FEAT-07: Wait for background thumbnail generation to complete
+            # Keep server running while thumbnails generate so browser can receive updates
             import time
-            if success_count > 0:
-                # Estimate wait time: ~1.5s per thumbnail, with timeout at 30s
-                # For 10 dives: 15s wait; for 60+ dives: 30s timeout
-                wait_sec = min(success_count * 1.5, 30.0)
-                click.echo(f"\n🌐 Waiting for thumbnails to generate (estimated {wait_sec:.0f}s)...")
-                time.sleep(wait_sec)
-            else:
-                click.echo("\n🌐 No dives to thumbnail")
+            if success_count > 0 and 'thumbnail_thread' in locals():
+                click.echo(f"\n🖼️  Waiting for thumbnail generation to complete...")
+                click.echo(f"   Server running at {server.get_url()} - Keep browser open")
 
-            click.echo("🌐 Server shutting down...")
+                # Wait for thread to complete with timeout
+                thumbnail_thread.join(timeout=120.0)  # Wait up to 2 minutes
+
+                if thumbnail_thread.is_alive():
+                    click.echo("⚠️  Thumbnail generation still running (timeout reached)")
+                else:
+                    click.echo("✓ Thumbnail generation complete")
+            else:
+                click.echo("\n🌐 No background thumbnails to wait for")
+
+            click.echo("\n🌐 Server shutting down...")
             if server.stop():
                 click.echo("✓ Server stopped")
 
