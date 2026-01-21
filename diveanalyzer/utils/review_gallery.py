@@ -1762,7 +1762,7 @@ class DiveGalleryGenerator:
 
             connect() {{
                 console.log(`SSE: Attempting to connect to ${{this.serverUrl}}/events (attempt ${{this.reconnectAttempts + 1}}/${{this.maxReconnectAttempts}})`);
-                this._updateConnectionBanner('connecting', this.reconnectAttempts + 1);
+                this._updateStatus('connecting', `Connecting (attempt ${{this.reconnectAttempts + 1}})`);
 
                 try {{
                     this.eventSource = new EventSource(`${{this.serverUrl}}/events`);
