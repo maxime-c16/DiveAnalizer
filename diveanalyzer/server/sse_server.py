@@ -162,23 +162,42 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            with open(self.gallery_path, "r") as f:
-                content = f.read()
+            # Get file size for Content-Length header
+            file_size = Path(self.gallery_path).stat().st_size
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
-            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Content-Length", str(file_size))
             self.end_headers()
-            self.wfile.write(content.encode("utf-8"))
 
-            logger.debug(f"Served gallery: {self.gallery_path}")
+            # Stream file in chunks to handle large files (3.8MB+)
+            chunk_size = 65536  # 64KB chunks
+            try:
+                with open(self.gallery_path, "rb") as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+
+                logger.debug(f"Served gallery: {self.gallery_path} ({file_size} bytes)")
+
+            except BrokenPipeError:
+                logger.debug(f"Client disconnected while serving gallery")
+            except Exception as e:
+                logger.error(f"Error streaming gallery: {e}")
 
         except Exception as e:
             logger.error(f"Error serving gallery: {e}")
-            self._send_error(500, f"Internal Server Error: {e}")
+            try:
+                self._send_error(500, f"Internal Server Error: {e}")
+            except:
+                # If we can't send error response, just log and return
+                logger.error(f"Could not send error response: {e}")
 
     def _handle_events_history(self):
         """Handle event history requests (FEAT-08: Polling fallback)."""
