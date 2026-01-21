@@ -387,41 +387,17 @@ def process(
         click.echo(f"📁 Output: {output_dir}")
         click.echo()
 
-        # Initialize server if requested
+        # Prepare server config if requested (will start after gallery is created)
         server: Optional[EventServer] = None
+        server_config = None
         if enable_server:
-            click.echo("🌐 Starting HTTP server for live review...")
-            try:
-                # Check if gallery template exists (will be created after extraction)
-                gallery_path = output_dir / "review_gallery.html"
-
-                server = EventServer(
-                    gallery_path=str(gallery_path),
-                    host="localhost",
-                    port=server_port,
-                    log_level="INFO" if verbose else "WARNING",
-                )
-
-                if server.start():
-                    click.echo(f"✓ Server running at {server.get_url()}")
-                    click.echo(f"  Events: {server.get_events_url()}")
-
-                    # FEAT-06: Auto-launch browser if --no-open not set
-                    if not no_open:
-                        try:
-                            webbrowser.open(f"http://localhost:{server_port}")
-                            click.echo(f"🌐 Opening browser at http://localhost:{server_port}")
-                        except Exception as e:
-                            # Silent fail - don't crash on browser open errors
-                            if verbose:
-                                click.echo(f"ℹ️  Could not open browser automatically: {e}")
-                else:
-                    click.echo("⚠️  Failed to start server, continuing without live review")
-                    server = None
-            except Exception as e:
-                click.echo(f"⚠️  Server startup failed: {e}, continuing without live review")
-                server = None
-            click.echo()
+            gallery_path = output_dir / "review_gallery.html"
+            server_config = {
+                'gallery_path': str(gallery_path),
+                'host': 'localhost',
+                'port': server_port,
+                'log_level': 'INFO' if verbose else 'WARNING',
+            }
 
         # Get video info
         try:
@@ -794,15 +770,44 @@ def process(
                     generator.scan_dives()
                     gallery_path = generator.generate_html()
 
-                    # Only auto-open browser if server is not handling it
-                    if not server:
-                        generator.open_in_browser(Path(gallery_path))
-
                     click.echo(f"✓ Gallery created: {gallery_path}")
                 except Exception as e:
                     click.echo(f"⚠️  Could not create gallery: {e}")
-                    if server:
-                        click.echo(f"⚠️  Server may not be able to serve gallery")
+                    server_config = None  # Don't try to start server without gallery
+
+            # NOW start the server (gallery exists and is ready to be served)
+            if server_config and success_count > 0:
+                try:
+                    click.echo(f"\n🌐 Starting HTTP server for live review...")
+                    server = EventServer(**server_config)
+
+                    if server.start():
+                        click.echo(f"✓ Server running at {server.get_url()}")
+                        click.echo(f"  Events: {server.get_events_url()}")
+
+                        # FEAT-06: Auto-launch browser now that server is ready
+                        if not no_open:
+                            try:
+                                webbrowser.open(f"http://localhost:{server_port}")
+                                click.echo(f"🌐 Opening browser at http://localhost:{server_port}")
+                            except Exception as e:
+                                # Silent fail - don't crash on browser open errors
+                                if verbose:
+                                    click.echo(f"ℹ️  Could not open browser automatically: {e}")
+                    else:
+                        click.echo("⚠️  Failed to start server, continuing without live review")
+                        server = None
+                except Exception as e:
+                    click.echo(f"⚠️  Server startup failed: {e}, continuing without live review")
+                    server = None
+
+            # If no server was requested, open gallery in browser directly
+            elif success_count > 0 and not server_config:
+                try:
+                    generator.open_in_browser(Path(gallery_path))
+                except Exception as e:
+                    if verbose:
+                        click.echo(f"ℹ️  Could not open browser: {e}")
 
             # FEAT-07: Start background thumbnail generation after extraction
             # This allows the gallery to appear immediately with placeholders,
