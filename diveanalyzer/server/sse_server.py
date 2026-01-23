@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue, Empty
 from typing import Optional, Dict, Any, Callable, List
@@ -504,8 +504,9 @@ class EventServer:
             # Expose server instance to handlers so they can request shutdown
             DiveReviewSSEHandler._server_instance = self
 
-            # Create and configure server
-            self.server = HTTPServer((self.host, self.port), DiveReviewSSEHandler)
+            # Create and configure server with ThreadingHTTPServer for concurrent requests
+            # (instead of HTTPServer which blocks on one request at a time)
+            self.server = ThreadingHTTPServer((self.host, self.port), DiveReviewSSEHandler)
             self.server.timeout = 1.0  # Timeout for socket operations
             self.server.allow_reuse_address = True
 
@@ -513,6 +514,9 @@ class EventServer:
             self.running = True
             self.thread = threading.Thread(target=self._run_server, daemon=False)
             self.thread.start()
+
+            # Give server thread a moment to bind to port before returning
+            time.sleep(0.5)
 
             self.logger.info(f"Server started on http://{self.host}:{self.port}")
 
@@ -524,17 +528,29 @@ class EventServer:
             return False
 
     def _run_server(self):
-        """Run the HTTP server (internal thread method)."""
+        """Run the HTTP server (internal thread method).
+
+        Uses ThreadingHTTPServer to handle concurrent requests.
+        Continuously polls _BaseServer__shutdown flag for graceful shutdown.
+        """
         try:
             self.logger.debug("Server thread started, listening for connections")
+            if not self.server:
+                self.logger.error("Server not initialized")
+                return
+
+            # ThreadingHTTPServer uses daemon threads for request handling
+            # We need to periodically check our running flag for graceful shutdown
+            self.server.timeout = 0.5  # Short timeout so we check running flag frequently
             while self.running:
                 if not self.server:
                     break
                 try:
-                    # Use handle_request to process one request at a time
-                    # This allows graceful shutdown
+                    # handle_request() processes ONE request and returns
+                    # With ThreadingHTTPServer, the request handler runs in its own thread
                     self.server.handle_request()
                 except (KeyboardInterrupt, SystemExit):
+                    self.logger.info("Received shutdown signal")
                     break
                 except Exception as e:
                     if self.running:

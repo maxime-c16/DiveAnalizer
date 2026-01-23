@@ -387,7 +387,7 @@ def process(
         click.echo(f"📁 Output: {output_dir}")
         click.echo()
 
-        # Prepare server config if requested (will start after gallery is created)
+        # Prepare server config if requested (will start early to receive all events)
         server: Optional[EventServer] = None
         server_config = None
         if enable_server:
@@ -398,6 +398,65 @@ def process(
                 'port': server_port,
                 'log_level': 'INFO' if verbose else 'WARNING',
             }
+
+            # Create placeholder gallery immediately so server can serve something
+            # while detection and extraction happen in the background
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                placeholder_html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DiveAnalyzer - Live Review</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 8px; padding: 40px; text-align: center; }
+        .status { font-size: 24px; margin: 20px 0; }
+        .spinner { display: inline-block; width: 40px; height: 40px; border: 4px solid #ddd; border-top-color: #0066cc; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .message { color: #666; font-size: 16px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏊 DiveAnalyzer</h1>
+        <h2>Live Review Gallery</h2>
+        <div class="spinner"></div>
+        <div class="status">Processing video...</div>
+        <div class="message">Detecting dives and generating gallery...</div>
+        <p id="progress"></p>
+    </div>
+    <script>
+        const serverUrl = window.location.origin;
+        const eventSource = new EventSource(serverUrl + '/events');
+        eventSource.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            console.log('Event:', data);
+        };
+        eventSource.addEventListener('status_update', (e) => {
+            const data = JSON.parse(e.data);
+            document.querySelector('.message').innerHTML =
+                `Phase: ${data.phase_name || 'Processing'}<br>` +
+                `Dives: ${data.dives_found || 0}/${data.dives_expected || 0}`;
+        });
+    </script>
+</body>
+</html>"""
+                gallery_path.write_text(placeholder_html, encoding='utf-8')
+
+                # Start server immediately to capture all events from detection onward
+                click.echo(f"🌐 Starting HTTP server for live review...")
+                server = EventServer(**server_config)
+                if server.start():
+                    click.echo(f"✓ Server running at {server.get_url()}")
+                    click.echo(f"  Events: {server.get_events_url()}")
+                else:
+                    click.echo("⚠️  Failed to start server, continuing without live review")
+                    server = None
+            except Exception as e:
+                click.echo(f"⚠️  Could not prepare server: {e}")
+                server = None
 
         # Get video info
         try:
@@ -775,34 +834,20 @@ def process(
                     click.echo(f"⚠️  Could not create gallery: {e}")
                     server_config = None  # Don't try to start server without gallery
 
-            # NOW start the server (gallery exists and is ready to be served)
-            if server_config and success_count > 0:
+            # Browser auto-launch if server was started and gallery is ready
+            # Server was already started early (if enable_server=True)
+            # Now we just launch the browser to view the real gallery
+            if server and success_count > 0 and not no_open:
                 try:
-                    click.echo(f"\n🌐 Starting HTTP server for live review...")
-                    server = EventServer(**server_config)
-
-                    if server.start():
-                        click.echo(f"✓ Server running at {server.get_url()}")
-                        click.echo(f"  Events: {server.get_events_url()}")
-
-                        # FEAT-06: Auto-launch browser now that server is ready
-                        if not no_open:
-                            try:
-                                webbrowser.open(f"http://localhost:{server_port}")
-                                click.echo(f"🌐 Opening browser at http://localhost:{server_port}")
-                            except Exception as e:
-                                # Silent fail - don't crash on browser open errors
-                                if verbose:
-                                    click.echo(f"ℹ️  Could not open browser automatically: {e}")
-                    else:
-                        click.echo("⚠️  Failed to start server, continuing without live review")
-                        server = None
+                    webbrowser.open(f"http://localhost:{server_port}")
+                    click.echo(f"\n🌐 Opening browser at http://localhost:{server_port}")
                 except Exception as e:
-                    click.echo(f"⚠️  Server startup failed: {e}, continuing without live review")
-                    server = None
+                    # Silent fail - don't crash on browser open errors
+                    if verbose:
+                        click.echo(f"ℹ️  Could not open browser automatically: {e}")
 
             # If no server was requested, open gallery in browser directly
-            elif success_count > 0 and not server_config:
+            elif success_count > 0 and not enable_server:
                 try:
                     generator.open_in_browser(Path(gallery_path))
                 except Exception as e:
