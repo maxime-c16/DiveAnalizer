@@ -10,7 +10,6 @@ from typing import List, Dict, Any
 import base64
 import tempfile
 import os
-from diveanalyzer.extraction.thumbnails import generate_timeline_thumbnails
 
 
 class DiveGalleryGenerator:
@@ -1482,10 +1481,11 @@ class DiveGalleryGenerator:
                 splash_min, splash_sec = divmod(int(dive.splash_time), 60)
                 end_min, end_sec = divmod(int(dive.end_time), 60)
 
-                # Generate timeline thumbnails for modal view (8 frames)
-                timeline_thumbnails = []
+                # Generate timeline thumbnails for modal view (8 frames) - optional
+                timeline_json = "[]"
                 if self.video_path:
                     try:
+                        from diveanalyzer.extraction.thumbnails import generate_timeline_thumbnails
                         timeline_frames = generate_timeline_thumbnails(
                             self.video_path,
                             dive.start_time,
@@ -1494,11 +1494,11 @@ class DiveGalleryGenerator:
                             as_base64=True,
                         )
                         timeline_thumbnails = [t for t in timeline_frames if t is not None]
+                        if timeline_thumbnails:
+                            timeline_json = json.dumps(timeline_thumbnails)
                     except Exception as e:
-                        # If timeline generation fails, use empty list
-                        timeline_thumbnails = []
-
-                timeline_json = json.dumps(timeline_thumbnails)
+                        # If timeline generation fails, skip it (gallery still works)
+                        pass
 
                 html += f"""
             <div class="dive-card" data-id="{dive_id}" data-start="{dive.start_time}" data-splash="{dive.splash_time}" data-end="{dive.end_time}" data-confidence="{dive.confidence}" data-timeline='{timeline_json}'>
