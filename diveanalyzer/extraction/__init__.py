@@ -9,6 +9,7 @@ from .thumbnails import (
     cleanup_thumbnails,
     ThumbnailSet,
 )
+from .parallel import ExtractionWorker, ParallelExtractionOrchestrator
 
 __all__ = [
     "extract_dive_clip",
@@ -22,4 +23,6 @@ __all__ = [
     "generate_thumbnails_parallel",
     "cleanup_thumbnails",
     "ThumbnailSet",
+    "ExtractionWorker",
+    "ParallelExtractionOrchestrator",
 ]
