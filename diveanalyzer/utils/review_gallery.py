@@ -26,6 +26,9 @@ class DiveGalleryGenerator:
         self.video_name = video_name
         self.dives = []
         self.thumbnails = {}
+        self.selection_mode = False
+        self.dives_metadata = []
+        self.thumbnail_map = {}
 
     def get_video_duration(self, video_path: Path) -> float:
         """Get video duration in seconds."""
@@ -1409,11 +1412,11 @@ class DiveGalleryGenerator:
     <div class="container">
         <div class="header">
             <h1>🤿 Dive Review Gallery</h1>
-            <p>Quick review and filter detected dives</p>
+            <p>SELECTION_MODE_TEXT</p>
             <div class="stats">
                 <div class="stat">
                     <span>Total Dives:</span>
-                    <span class="stat-value" id="total-dives">{len(self.dives)}</span>
+                    <span class="stat-value" id="total-dives">TOTAL_DIVES_COUNT</span>
                 </div>
                 <div class="stat">
                     <span>SELECTION_STAT_LABEL:</span>
@@ -1421,7 +1424,7 @@ class DiveGalleryGenerator:
                 </div>
                 <div class="stat" id="keep-stat" KEEP_STAT_STYLE>
                     <span>KEEP_STAT_LABEL:</span>
-                    <span class="stat-value" id="keep-count">{len(self.dives)}</span>
+                    <span class="stat-value" id="keep-count">KEEP_COUNT</span>
                 </div>
             </div>
         </div>
@@ -1435,23 +1438,94 @@ class DiveGalleryGenerator:
 """
 
         # Replace simple Python placeholders inside the static HTML (avoids f-string parsing of JS braces)
-        html = html.replace('{len(self.dives)}', str(len(self.dives)))
+        dives_to_render = self.dives_metadata if self.selection_mode else self.dives
+        html = html.replace('{len(self.dives)}', str(len(dives_to_render)))
 
         # Add dive cards
-        for dive in self.dives:
-            thumbnails_html = ""
-            for thumb in [dive["thumbnails"]["start"], dive["thumbnails"]["middle"], dive["thumbnails"]["end"]]:
-                if thumb:
-                    thumbnails_html += f'<img class="thumbnail" src="{thumb}" alt="frame">'
+        for dive_idx, dive in enumerate(dives_to_render):
+            if self.selection_mode:
+                # Selection mode: render from DiveEvent objects with thumbnails
+                dive_id = dive_idx + 1  # 1-indexed dive number
+                duration = dive.end_time - dive.start_time
+                confidence_str = "high" if dive.confidence >= 0.8 else "medium" if dive.confidence >= 0.6 else "low"
+
+                # Get thumbnails from thumbnail_map
+                thumbnails_html = ""
+                if dive_id in self.thumbnail_map:
+                    thumb_set = self.thumbnail_map[dive_id]
+                    # Try to load thumbnails from disk as base64 data URLs
+                    for thumb_path in [thumb_set.start_thumbnail, thumb_set.middle_thumbnail, thumb_set.end_thumbnail]:
+                        if thumb_path and isinstance(thumb_path, str):
+                            # If it's a file path, read it; if it's already base64, use as-is
+                            if thumb_path.startswith('data:'):
+                                thumbnails_html += f'<img class="thumbnail" src="{thumb_path}" alt="frame">'
+                            elif Path(thumb_path).exists():
+                                try:
+                                    with open(thumb_path, 'rb') as f:
+                                        img_data = base64.b64encode(f.read()).decode()
+                                    thumbnails_html += f'<img class="thumbnail" src="data:image/jpeg;base64,{img_data}" alt="frame">'
+                                except:
+                                    thumbnails_html += '<div class="thumbnail" style="background: #ddd;"></div>'
+                            else:
+                                thumbnails_html += '<div class="thumbnail" style="background: #ddd;"></div>'
+                        else:
+                            thumbnails_html += '<div class="thumbnail" style="background: #ddd;"></div>'
                 else:
-                    thumbnails_html += '<div class="thumbnail" style="background: #ddd;"></div>'
+                    # No thumbnails available for this dive
+                    thumbnails_html = '<div class="thumbnail" style="background: #ddd;"></div>' * 3
 
-            # Prepare timeline thumbnails for embedding in data attribute
-            timeline_data = dive.get("timeline_thumbnails", [])
-            # Filter out None values and escape for JSON
-            timeline_json = json.dumps(timeline_data)
+                # Format times for display
+                start_min, start_sec = divmod(int(dive.start_time), 60)
+                splash_min, splash_sec = divmod(int(dive.splash_time), 60)
+                end_min, end_sec = divmod(int(dive.end_time), 60)
 
-            html += f"""
+                html += f"""
+            <div class="dive-card" data-id="{dive_id}" data-start="{dive.start_time}" data-splash="{dive.splash_time}" data-end="{dive.end_time}" data-confidence="{dive.confidence}">
+                <div class="checkbox">
+                    <input type="checkbox" class="dive-checkbox" checked>
+                </div>
+                <div class="thumbnails">
+                    {thumbnails_html}
+                </div>
+                <div class="dive-info">
+                    <div class="dive-number">Dive #{dive_id:02d}</div>
+                    <div class="dive-details">
+                        <div class="detail-row">
+                            <span class="detail-label">Start:</span>
+                            <span class="detail-value">{start_min}:{start_sec:02d}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Splash:</span>
+                            <span class="detail-value">{splash_min}:{splash_sec:02d}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">End:</span>
+                            <span class="detail-value">{end_min}:{end_sec:02d}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Duration:</span>
+                            <span class="detail-value">{duration:.1f}s</span>
+                        </div>
+                    </div>
+                    <div class="confidence {confidence_str}">{confidence_str.upper()}</div>
+                </div>
+            </div>
+"""
+            else:
+                # Extracted mode: render from extracted dive dict
+                thumbnails_html = ""
+                for thumb in [dive["thumbnails"]["start"], dive["thumbnails"]["middle"], dive["thumbnails"]["end"]]:
+                    if thumb:
+                        thumbnails_html += f'<img class="thumbnail" src="{thumb}" alt="frame">'
+                    else:
+                        thumbnails_html += '<div class="thumbnail" style="background: #ddd;"></div>'
+
+                # Prepare timeline thumbnails for embedding in data attribute
+                timeline_data = dive.get("timeline_thumbnails", [])
+                # Filter out None values and escape for JSON
+                timeline_json = json.dumps(timeline_data)
+
+                html += f"""
             <div class="dive-card" data-id="{dive['id']}" data-file="{dive['filename']}" data-timeline='{timeline_json}'>
                 <div class="checkbox">
                     <input type="checkbox" class="dive-checkbox">
@@ -1485,9 +1559,7 @@ class DiveGalleryGenerator:
             <div class="controls">
                 <button class="btn-select-all" id="btn-select-all">Select All</button>
                 <button class="btn-deselect-all" id="btn-deselect-all">Deselect All</button>
-                <button class="btn-watch" id="btn-watch">Watch Selected</button>
-                <button class="btn-delete" id="btn-delete">Delete Selected</button>
-                <button class="btn-accept" id="btn-accept">Accept All & Close</button>
+                CONTROL_BUTTONS_PLACEHOLDER
             </div>
 
             <div class="video-player" id="video-player">
@@ -3140,6 +3212,8 @@ MODAL VIEW (open by double-clicking a dive):
             html = html.replace('SELECTION_MODE_TEXT', 'Select dives to extract')
             html = html.replace('SELECTION_STAT_LABEL', 'Selected')
             html = html.replace('SELECTION_STAT_VALUE', f'{dives_count}/{dives_count}')
+            html = html.replace('TOTAL_DIVES_COUNT', str(dives_count))
+            html = html.replace('KEEP_COUNT', str(dives_count))
             html = html.replace('KEEP_STAT_STYLE', 'style="display: none;"')
             html = html.replace('KEEP_STAT_LABEL', 'To Keep')
             html = html.replace('CONTROL_BUTTONS_PLACEHOLDER',
@@ -3149,6 +3223,8 @@ MODAL VIEW (open by double-clicking a dive):
             html = html.replace('SELECTION_MODE_TEXT', 'Quick review and filter detected dives')
             html = html.replace('SELECTION_STAT_LABEL', 'Selected for Delete')
             html = html.replace('SELECTION_STAT_VALUE', '0')
+            html = html.replace('TOTAL_DIVES_COUNT', str(len(self.dives)))
+            html = html.replace('KEEP_COUNT', str(len(self.dives)))
             html = html.replace('KEEP_STAT_STYLE', '')
             html = html.replace('KEEP_STAT_LABEL', 'To Keep')
             html = html.replace('CONTROL_BUTTONS_PLACEHOLDER',
