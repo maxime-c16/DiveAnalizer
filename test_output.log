@@ -1,0 +1,108 @@
+🎬 DiveAnalyzer v2.0.0
+📹 Input: /Users/mcauchy/workflow/DiveAnalizer/tests/fixtures/edge_cases/back_to_back.mp4
+📁 Output: dives
+
+🌐 Starting HTTP server for live review...
+✓ Server running at http://localhost:8765
+  Events: http://localhost:8765/events
+🌐 Opening browser at http://localhost:8765
+⏱️  Video duration: 0:01:00
+
+🔍 Analyzing system capabilities...
+   System Score: 5/10
+   CPU: 4-core @ 1.4 GHz
+   RAM: 8.0 GB
+   GPU: NONE
+
+   ✓ Auto-selected Phase 2
+   Estimated time: ~15s
+   Expected confidence: 92%
+
+
+🔊 Extracting audio track...
+✓ Audio extracted
+
+🌊 Detecting splashes (threshold -25dB)...
+✓ Found 10 splash peaks
+
+🎬 Phase 2: Motion-Based Validation...
+  Detecting motion bursts...
+  ✓ Found 5 motion bursts
+
+🔗 Fusing detection signals...
+✓ Created 10 dive events (audio + motion)
+✓ Merged overlapping dives: 10 → 9
+  └─ Motion validated: 3/9
+✓ Final dive count: 9
+
+📸 Generating thumbnails for 9 dives...
+Warning: Failed to generate thumbnails for dive 9: Thumbnail generation failed: FFmpeg thumbnail generation failed: ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers
+  built with Apple clang version 16.0.0 (clang-1600.0.26.6)
+  configuration: --prefix=/usr/local/Cellar/ffmpeg/8.0.1 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libaribb24 --enable-libbluray --enable-libdav1d --enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox --enable-audiotoolbox
+  libavutil      60.  8.100 / 60.  8.100
+  libavcodec     62. 11.100 / 62. 11.100
+  libavformat    62.  3.100 / 62.  3.100
+  libavdevice    62.  1.100 / 62.  1.100
+  libavfilter    11.  4.100 / 11.  4.100
+  libswscale      9.  1.100 /  9.  1.100
+  libswresample   6.  1.100 /  6.  1.100
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/mcauchy/workflow/DiveAnalizer/tests/fixtures/edge_cases/back_to_back.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomdby1iso2mp41
+    encoder         : Lavf62.3.100
+  Duration: 00:01:00.12, start: 0.000000, bitrate: 8685 kb/s
+  Stream #0:0[0x1](und): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1920x1080, 8548 kb/s, 30 fps, 30 tbr, 19200 tbn, start 0.220990 (default)
+    Metadata:
+      handler_name    : Core Media Video
+      vendor_id       : [0][0][0][0]
+      encoder         : HEVC
+    Side data:
+      displaymatrix: rotation of -90.00 degrees
+      Ambient Viewing Environment, ambient_illuminance=314.000000, ambient_light_x=0.312700, ambient_light_y=0.329000
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 159 kb/s (default)
+    Metadata:
+      handler_name    : Core Media Audio
+      vendor_id       : [0][0][0][0]
+Stream mapping:
+  Stream #0:0 -> #0:0 (hevc (native) -> mjpeg (native))
+Press [q] to stop, [?] for help
+[hevc @ 0x7f7ba913b980] Multiple Dolby Vision RPUs found in one AU. Skipping previous.
+[hevc @ 0x7f7ba9143b00] Multiple Dolby Vision RPUs found in one AU. Skipping previous.
+[hevc @ 0x7f7ba914bcc0] Multiple Dolby Vision RPUs found in one AU. Skipping previous.
+[vf#0:0 @ 0x7f7ba9127b80] No filtered frames for output stream, trying to initialize anyway.
+[mjpeg @ 0x7f7ba9179240] Non full-range YUV is non-standard, set strict_std_compliance to at most unofficial to use it.
+[mjpeg @ 0x7f7ba9136680] ff_frame_thread_encoder_init failed
+[vost#0:0/mjpeg @ 0x7f7ba9135dc0] [enc:mjpeg @ 0x7f7ba9136600] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 0x7f7ba9825800] Error sending frames to consumers: Invalid argument
+[vf#0:0 @ 0x7f7ba9825800] Task finished with error code: -22 (Invalid argument)
+[vf#0:0 @ 0x7f7ba9825800] Terminating thread with return code -22 (Invalid argument)
+[vost#0:0/mjpeg @ 0x7f7ba9135dc0] [enc:mjpeg @ 0x7f7ba9136600] Could not open encoder before EOF
+[vost#0:0/mjpeg @ 0x7f7ba9135dc0] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/mjpeg @ 0x7f7ba9135dc0] Terminating thread with return code -22 (Invalid argument)
+[out#0/image2 @ 0x7f7ba9135480] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.07    
+Conversion failed!
+
+✓ Generated thumbnails for 8/9 dives
+
+📊 Detection Summary:
+  Total dives: 9
+  Thumbnails ready: 8
+  Output folder: dives
+
+💡 Gallery will open with thumbnails.
+   Review and select dives to extract.
+
+🖼️  Creating thumbnail gallery...
+✅ Gallery saved to: dives/review_gallery.html
+✓ Thumbnail gallery created: dives/review_gallery.html
+
+🌐 Server is running for thumbnail review and dive selection.
+  • Review gallery: http://localhost:8765
+  • Select dives to extract, then click 'Extract Selected Dives'
+  • When done, click 'Accept & Close' in the gallery
+  • Or stop the process with Ctrl+C in this terminal.
+
+✅ Done!

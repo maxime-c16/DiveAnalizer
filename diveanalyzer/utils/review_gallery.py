@@ -10,20 +10,23 @@ from typing import List, Dict, Any
 import base64
 import tempfile
 import os
+from diveanalyzer.extraction.thumbnails import generate_timeline_thumbnails
 
 
 class DiveGalleryGenerator:
     """Generates interactive HTML gallery for dive review."""
 
-    def __init__(self, output_dir: Path, video_name: str = ""):
+    def __init__(self, output_dir: Path, video_name: str = "", video_path: str = ""):
         """Initialize gallery generator.
 
         Args:
             output_dir: Directory containing extracted dive videos
             video_name: Name of source video file
+            video_path: Full path to source video file (for timeline generation)
         """
         self.output_dir = Path(output_dir)
         self.video_name = video_name
+        self.video_path = video_path
         self.dives = []
         self.thumbnails = {}
         self.selection_mode = False
@@ -1479,8 +1482,26 @@ class DiveGalleryGenerator:
                 splash_min, splash_sec = divmod(int(dive.splash_time), 60)
                 end_min, end_sec = divmod(int(dive.end_time), 60)
 
+                # Generate timeline thumbnails for modal view (8 frames)
+                timeline_thumbnails = []
+                if self.video_path:
+                    try:
+                        timeline_frames = generate_timeline_thumbnails(
+                            self.video_path,
+                            dive.start_time,
+                            dive.end_time,
+                            num_frames=8,
+                            as_base64=True,
+                        )
+                        timeline_thumbnails = [t for t in timeline_frames if t is not None]
+                    except Exception as e:
+                        # If timeline generation fails, use empty list
+                        timeline_thumbnails = []
+
+                timeline_json = json.dumps(timeline_thumbnails)
+
                 html += f"""
-            <div class="dive-card" data-id="{dive_id}" data-start="{dive.start_time}" data-splash="{dive.splash_time}" data-end="{dive.end_time}" data-confidence="{dive.confidence}">
+            <div class="dive-card" data-id="{dive_id}" data-start="{dive.start_time}" data-splash="{dive.splash_time}" data-end="{dive.end_time}" data-confidence="{dive.confidence}" data-timeline='{timeline_json}'>
                 <div class="checkbox">
                     <input type="checkbox" class="dive-checkbox" checked>
                 </div>

@@ -5,6 +5,7 @@ from .proxy import generate_proxy, get_video_resolution, get_proxy_size_reductio
 from .thumbnails import (
     generate_thumbnail_frame,
     generate_dive_thumbnails,
+    generate_timeline_thumbnails,
     generate_thumbnails_parallel,
     cleanup_thumbnails,
     ThumbnailSet,
@@ -20,6 +21,7 @@ __all__ = [
     "get_proxy_size_reduction",
     "generate_thumbnail_frame",
     "generate_dive_thumbnails",
+    "generate_timeline_thumbnails",
     "generate_thumbnails_parallel",
     "cleanup_thumbnails",
     "ThumbnailSet",

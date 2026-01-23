@@ -69,14 +69,18 @@ def generate_thumbnail_frame(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     # FFmpeg command to extract single frame
+    # For 10-bit HEVC videos, use libswscale with detailed options
     cmd = [
         'ffmpeg',
         '-y',  # Overwrite
         '-ss', str(timestamp),  # Seek to timestamp
         '-i', video_path,
         '-vframes', '1',  # Extract only 1 frame
-        '-vf', f'scale={width}:{height}',  # Resize
+        '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos',  # Resize with quality
+        '-c:v', 'mjpeg',  # Explicitly use MJPEG encoder
+        '-pix_fmt', 'yuvj420p',  # Use MJPEG-compatible YUV format
         '-q:v', str(100 - quality),  # Quality (FFmpeg uses inverted scale)
+        '-sws_flags', 'lanczos',  # Use Lanczos scaling
         output_path
     ]
 
@@ -248,6 +252,60 @@ def generate_thumbnails_parallel(
     results.sort(key=lambda x: x.dive_id)
 
     return results
+
+
+def generate_timeline_thumbnails(
+    video_path: str,
+    start_time: float,
+    end_time: float,
+    num_frames: int = 8,
+    width: int = 160,
+    height: int = 90,
+    as_base64: bool = True,
+) -> List[str]:
+    """
+    Generate evenly-spaced timeline thumbnails across dive duration.
+
+    Args:
+        video_path: Path to source video
+        start_time: Dive start time in seconds
+        end_time: Dive end time in seconds
+        num_frames: Number of frames to extract (default 8 = 2x4 grid)
+        width: Thumbnail width in pixels
+        height: Thumbnail height in pixels
+        as_base64: Return base64 encoded strings
+
+    Returns:
+        List of base64 encoded thumbnail strings
+
+    Example:
+        >>> frames = generate_timeline_thumbnails('video.mp4', 10.0, 24.0, 8)
+        >>> len(frames)
+        8
+    """
+    thumbnails = []
+    duration = end_time - start_time
+
+    for i in range(num_frames):
+        # Distribute frames evenly across the dive duration
+        progress = i / (num_frames - 1) if num_frames > 1 else 0
+        timestamp = start_time + (progress * duration)
+
+        try:
+            thumb = generate_thumbnail_frame(
+                video_path,
+                timestamp,
+                width=width,
+                height=height,
+                quality=70,  # Lower quality for timeline
+                as_base64=as_base64,
+            )
+            thumbnails.append(thumb)
+        except Exception as e:
+            # Return placeholder if generation fails
+            thumbnails.append(None)
+
+    return thumbnails
 
 
 def cleanup_thumbnails(thumbnail_sets: List[ThumbnailSet]):

@@ -1041,7 +1041,7 @@ def process(
                         })
 
                     click.echo(f"\n🖼️  Creating thumbnail gallery...")
-                    generator = DiveGalleryGenerator(output_dir, Path(video_path).name)
+                    generator = DiveGalleryGenerator(output_dir, Path(video_path).name, video_path)
 
                     # Pass thumbnail metadata and dive info to gallery generator
                     # Gallery will show thumbnails with selection UI (not extracted videos)
