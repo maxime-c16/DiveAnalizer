@@ -24,6 +24,7 @@ from .detection.fusion import (
 )
 from .detection.motion import detect_motion_bursts
 from .extraction.ffmpeg import extract_multiple_dives, get_video_duration, format_time
+from .extraction.thumbnails import generate_thumbnails_parallel, ThumbnailSet
 from .extraction.proxy import generate_proxy, is_proxy_generation_needed
 from .storage.cache import CacheManager
 from .storage.icloud import find_icloud_videos
@@ -954,26 +955,58 @@ def process(
             click.echo("\n⚠️  No dives detected. Try adjusting --threshold or --confidence")
             sys.exit(0)
 
-        # Phase 4: Extract clips
-        click.echo(f"\n✂️  Extracting {len(dives)} dive clips...")
+        # Phase 4: Generate thumbnails (not full extraction yet)
+        click.echo(f"\n📸 Generating thumbnails for {len(dives)} dives...")
+
+        # Create thumbnail output directory
+        thumb_dir = Path(output_dir) / ".thumbnails"
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+
         try:
-            results = extract_multiple_dives(
-                video_path,
-                dives,
-                output_dir,
-                audio_enabled=not no_audio,
-                verbose=verbose,
+            # Progress callback for thumbnail generation
+            def on_thumbnail_progress(completed, total):
+                if server:
+                    server.emit("status_update", {
+                        "phase": "thumbnail_generation",
+                        "phase_name": "Generating Thumbnails",
+                        "dives_found": len(dives),
+                        "dives_expected": len(dives),
+                        "thumbnails_ready": completed,
+                        "thumbnails_expected": total,
+                        "processing_speed": 0,
+                        "elapsed_seconds": 0,
+                        "progress_percent": int((completed / total) * 100),
+                    })
+
+            # Prepare dive list for thumbnail generation
+            dive_list = [
+                (i + 1, dive.start_time, dive.end_time)
+                for i, dive in enumerate(dives)
+            ]
+
+            # Generate thumbnails in parallel
+            thumbnails = generate_thumbnails_parallel(
+                str(video_path),
+                dive_list,
+                output_dir=str(thumb_dir),
+                max_workers=4,
+                as_base64=False,
+                progress_callback=on_thumbnail_progress,
             )
 
-            success_count = sum(1 for s, _, _ in results.values() if s)
-            click.echo(f"✓ Successfully extracted {success_count}/{len(dives)} clips")
+            success_count = len(thumbnails)
+            click.echo(f"✓ Generated thumbnails for {success_count}/{len(dives)} dives")
 
-            # FEAT-05: Emit extraction and final status update for server
+            # Store thumbnail metadata for gallery generation
+            # We'll attach this to the dives for the gallery
+            thumbnail_map = {thumb.dive_id: thumb for thumb in thumbnails}
+
+            # Emit thumbnail generation complete
             if server:
                 server.emit("status_update", {
-                    "phase": "complete",
-                    "phase_name": "Extraction Complete",
-                    "dives_found": success_count,
+                    "phase": "thumbnails_complete",
+                    "phase_name": "Thumbnails Ready",
+                    "dives_found": len(dives),
                     "dives_expected": len(dives),
                     "thumbnails_ready": success_count,
                     "thumbnails_expected": len(dives),
@@ -981,67 +1014,63 @@ def process(
                     "elapsed_seconds": 0,
                     "progress_percent": 100,
                 })
-                server.emit("extraction_complete", {
-                    "total_dives": len(dives),
-                    "successful": success_count,
-                    "failed": len(dives) - success_count,
-                })
 
             # Show summary
-            click.echo("\n📊 Summary:")
+            click.echo("\n📊 Detection Summary:")
             click.echo(f"  Total dives: {len(dives)}")
-            click.echo(f"  Extracted: {success_count}")
-
-            if success_count < len(dives):
-                click.echo(f"  Failed: {len(dives) - success_count}")
-
+            click.echo(f"  Thumbnails ready: {success_count}")
             click.echo(f"  Output folder: {output_dir}")
+            click.echo(f"\n💡 Gallery will open with thumbnails.")
+            click.echo(f"   Review and select dives to extract.")
 
-            for dive_num in sorted(results.keys()):
-                success, path, error = results[dive_num]
-                if success:
-                    size_info = ""
-                    if Path(path).exists():
-                        size_mb = Path(path).stat().st_size / (1024 * 1024)
-                        size_info = f" ({size_mb:.1f}MB)"
-                    click.echo(f"  ✓ dive_{dive_num:03d}.mp4{size_info}")
-                else:
-                    click.echo(f"  ✗ dive_{dive_num:03d}.mp4 - {error}")
-
-            # Create review gallery HTML with placeholders for detected dives
-            # This must be done before the server starts serving requests
+            # Create review gallery with thumbnails (not extracted videos)
             if success_count > 0:
                 try:
-                    # Emit status that we're preparing the real gallery
+                    # Emit status that we're preparing the gallery
                     if server:
                         server.emit("status_update", {
                             "phase": "gallery_generation",
                             "phase_name": "Preparing Gallery",
                             "dives_found": success_count,
                             "dives_expected": len(dives),
-                            "thumbnails_ready": 0,
+                            "thumbnails_ready": success_count,
                             "thumbnails_expected": len(dives),
                             "processing_speed": 0,
                             "elapsed_seconds": 0,
                             "progress_percent": 95,
                         })
 
-                    click.echo(f"\n📸 Creating review gallery...")
+                    click.echo(f"\n🖼️  Creating thumbnail gallery...")
                     generator = DiveGalleryGenerator(output_dir, Path(video_path).name)
-                    generator.scan_dives()
+
+                    # Pass thumbnail metadata and dive info to gallery generator
+                    # Gallery will show thumbnails with selection UI (not extracted videos)
+                    generator.thumbnail_map = thumbnail_map
+                    generator.dives_metadata = dives  # Pass dive timing info
+                    generator.selection_mode = True  # Enable selection UI
+
                     gallery_path = generator.generate_html()
 
-                    click.echo(f"✓ Gallery created: {gallery_path}")
+                    click.echo(f"✓ Thumbnail gallery created: {gallery_path}")
 
-                    # Emit event to notify browser that real gallery is ready
-                    # Browser should refresh to see actual dive cards instead of placeholder
+                    # Emit event to notify browser that gallery is ready
                     if server:
+                        # Store thumbnail map and dives in server for extraction later
+                        server.thumbnail_map = thumbnail_map
+                        server.dives_metadata = dives
+                        server.video_path = str(video_path)
+                        server.output_dir = str(output_dir)
+                        server.audio_enabled = not no_audio
+
                         server.emit("gallery_ready", {
-                            "message": "Real gallery is ready. Switching view...",
+                            "message": "Thumbnail gallery ready. Select dives to extract.",
                             "dives_count": success_count,
+                            "mode": "selection",
                         })
                 except Exception as e:
                     click.echo(f"⚠️  Could not create gallery: {e}")
+                    if verbose:
+                        traceback.print_exc()
                     server_config = None  # Don't try to start server without gallery
 
             # If no server was requested, open gallery in browser directly
@@ -1054,42 +1083,12 @@ def process(
 
             # FEAT-07: Start background thumbnail generation after extraction
             # This allows the gallery to appear immediately with placeholders,
-            # while thumbnails are generated in the background
-            if server and success_count > 0:
-                click.echo(f"\n🖼️  Generating thumbnails in background...")
-
-                # Emit status update so browser dashboard shows dive counts
-                server.emit("status_update", {
-                    "phase": "thumbnail_generation",
-                    "phase_name": "Generating Thumbnails",
-                    "dives_found": success_count,
-                    "dives_expected": success_count,
-                    "thumbnails_ready": 0,
-                    "thumbnails_expected": success_count,
-                    "progress_percent": 0,
-                    "message": f"Generating thumbnails for {success_count} dive{'s' if success_count != 1 else ''}...",
-                })
-
-                # Prepare dive list for background generation
-                dive_list_for_thumbnails = [
-                    (dive_num, str(output_dir / f"dive_{dive_num:03d}.mp4"))
-                    for dive_num in sorted(results.keys())
-                    if results[dive_num][0]  # Only successful dives
-                ]
-
-                # Start background thread for thumbnail generation
-                # This emits thumbnail_ready events as each one completes
-                thumbnail_thread = threading.Thread(
-                    target=generate_thumbnails_deferred,
-                    args=(dive_list_for_thumbnails, output_dir, server),
-                    kwargs={"timeout_sec": 1200.0},
-                    daemon=True
-                )
-                thumbnail_thread.start()
-                click.echo(f"✓ Background thumbnail generation started")
+            # Thumbnails already generated earlier - no background generation needed
 
         except Exception as e:
-            click.echo(f"❌ Failed to extract clips: {e}", err=True)
+            click.echo(f"❌ Failed to generate thumbnails: {e}", err=True)
+            if verbose:
+                traceback.print_exc()
             if server:
                 server.stop()
             sys.exit(1)
@@ -1101,25 +1100,11 @@ def process(
                 "output_directory": str(output_dir),
             })
 
-            # FEAT-07: Wait for background thumbnail generation to complete
-            # Keep server running while thumbnails generate so browser can receive updates
-            import time
-            if success_count > 0 and 'thumbnail_thread' in locals():
-                click.echo(f"\n🖼️  Waiting for thumbnail generation to complete...")
-                click.echo(f"   Server running at {server.get_url()} - Keep browser open")
-
-                # Wait for thread to complete with timeout
-                thumbnail_thread.join(timeout=120.0)  # Wait up to 2 minutes
-
-                if thumbnail_thread.is_alive():
-                    click.echo("⚠️  Thumbnail generation still running (timeout reached)")
-                else:
-                    click.echo("✓ Thumbnail generation complete")
-            else:
-                click.echo("\n🌐 No background thumbnails to wait for")
-
-            click.echo("\n🌐 Server is running for live review until you shut it down.")
-            click.echo(f"  • To stop the server: visit {server.get_url()}/shutdown in your browser or click 'Accept All & Close' in the gallery.")
+            # Server is running - user will select dives and extract in browser
+            click.echo("\n🌐 Server is running for thumbnail review and dive selection.")
+            click.echo(f"  • Review gallery: {server.get_url()}")
+            click.echo(f"  • Select dives to extract, then click 'Extract Selected Dives'")
+            click.echo(f"  • When done, click 'Accept & Close' in the gallery")
             click.echo("  • Or stop the process with Ctrl+C in this terminal.")
 
         click.echo("\n✅ Done!")
