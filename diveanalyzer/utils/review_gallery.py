@@ -2128,11 +2128,15 @@ class DiveGalleryGenerator:
                 return;
             }}
 
-            // Remove empty gallery message on first card
+            // Remove empty gallery message when cards exist
             const emptyMessage = document.getElementById('emptyMessage');
-            if (emptyMessage && document.querySelectorAll('.dive-card:not(.placeholder-card)').length === 0) {{
-                emptyMessage.remove();
-                console.log('FEAT-03: Empty gallery message removed');
+            if (emptyMessage) {{
+                // Check if there are ANY dive cards (real or placeholder)
+                const allCards = document.querySelectorAll('.dive-card');
+                if (allCards.length > 0) {{
+                    emptyMessage.style.display = 'none';
+                    console.log('FEAT-03: Empty gallery message hidden (' + allCards.length + ' cards found)');
+                }}
             }}
 
             // Create placeholder card element
@@ -2363,6 +2367,15 @@ class DiveGalleryGenerator:
         // Initialize after DOM is ready
         function initGallery() {{
             cards = Array.from(document.querySelectorAll('.dive-card'));
+
+            // Hide empty message if cards exist
+            if (cards.length > 0) {{
+                const emptyMessage = document.getElementById('emptyMessage');
+                if (emptyMessage) {{
+                    emptyMessage.style.display = 'none';
+                    console.log('Empty gallery message hidden on load (' + cards.length + ' cards found)');
+                }}
+            }}
 
             // FEAT-02: Initialize real-time event consumer
             initializeEventConsumer();

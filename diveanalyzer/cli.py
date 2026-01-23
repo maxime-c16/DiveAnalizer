@@ -507,32 +507,70 @@ def process(
         };
 
         function updateStatus(statusData) {
-            const phase = statusData.phase || 'phase_1';
-            const phaseName = phaseNames[phase] || statusData.phase_name || 'Processing';
-            const phaseStatus = phaseStatuses[phase] || 'Processing...';
+            try {
+                const phase = statusData.phase || 'phase_1';
+                const phaseName = phaseNames[phase] || statusData.phase_name || 'Processing';
+                const phaseStatus = phaseStatuses[phase] || 'Processing...';
 
-            document.getElementById('phaseLabel').textContent = phaseName;
-            document.getElementById('phaseStatus').textContent = phaseStatus;
+                console.log(`Status update: ${phaseName}, Dives: ${statusData.dives_found}/${statusData.dives_expected}, Progress: ${statusData.progress_percent}%`);
 
-            const diveText = `${statusData.dives_found || 0}/${statusData.dives_expected || 0}`;
-            const speedText = `${(statusData.processing_speed || 0).toFixed(2)} dives/min`;
-            const thumbText = `${statusData.thumbnails_ready || 0}/${statusData.thumbnails_expected || 0}`;
+                // Update phase info
+                const phaseLabel = document.getElementById('phaseLabel');
+                const phaseStatusElem = document.getElementById('phaseStatus');
+                if (phaseLabel) phaseLabel.textContent = phaseName;
+                if (phaseStatusElem) phaseStatusElem.textContent = phaseStatus;
 
-            document.getElementById('metricDives').textContent = diveText;
-            document.getElementById('metricSpeed').textContent = speedText;
-            document.getElementById('metricThumbnails').textContent = thumbText;
+                // Update metrics with proper null checking
+                const diveText = `${statusData.dives_found || 0}/${statusData.dives_expected || 0}`;
+                const speedText = `${(statusData.processing_speed || 0).toFixed(2)} dives/min`;
+                const thumbText = `${statusData.thumbnails_ready || 0}/${statusData.thumbnails_expected || 0}`;
+                const timeText = calculateTimeRemaining(statusData);
 
-            const percent = Math.min(100, statusData.progress_percent || 0);
-            document.getElementById('progressBarFill').style.width = percent + '%';
-            document.getElementById('progressPercent').textContent = Math.round(percent) + '%';
+                const metricDives = document.getElementById('metricDives');
+                const metricSpeed = document.getElementById('metricSpeed');
+                const metricTime = document.getElementById('metricTime');
+                const metricThumbs = document.getElementById('metricThumbnails');
 
-            // Update status message
-            if (statusData.dives_found > 0) {
-                document.getElementById('statusMessage').textContent =
-                    `✅ Found ${statusData.dives_found} dive(s) - Processing...`;
-                document.getElementById('statusMessage').style.borderLeftColor = '#28a745';
-                document.getElementById('statusMessage').style.background = '#e8f5e9';
+                if (metricDives) metricDives.textContent = diveText;
+                if (metricSpeed) metricSpeed.textContent = speedText;
+                if (metricTime) metricTime.textContent = timeText;
+                if (metricThumbs) metricThumbs.textContent = thumbText;
+
+                // Update progress bar
+                const percent = Math.min(100, statusData.progress_percent || 0);
+                const progressFill = document.getElementById('progressBarFill');
+                const progressPercent = document.getElementById('progressPercent');
+                if (progressFill) progressFill.style.width = percent + '%';
+                if (progressPercent) progressPercent.textContent = Math.round(percent) + '%';
+
+                // Update status message
+                const statusMsg = document.getElementById('statusMessage');
+                if (statusMsg) {
+                    if (statusData.dives_found > 0) {
+                        statusMsg.textContent = `✅ Found ${statusData.dives_found} dive(s) - Processing...`;
+                        statusMsg.style.borderLeftColor = '#28a745';
+                        statusMsg.style.background = '#e8f5e9';
+                    } else {
+                        statusMsg.textContent = `⏳ Detecting dives...`;
+                        statusMsg.style.borderLeftColor = '#0066cc';
+                        statusMsg.style.background = '#f0f4f8';
+                    }
+                }
+            } catch (err) {
+                console.error('Error in updateStatus:', err);
             }
+        }
+
+        function calculateTimeRemaining(statusData) {
+            if (statusData.processing_speed <= 0 || statusData.dives_expected <= 0) {
+                return '--:--';
+            }
+            const remaining = Math.max(0, statusData.dives_expected - statusData.dives_found);
+            if (remaining <= 0) return '0:00';
+            const timeMinutes = remaining / statusData.processing_speed;
+            const mins = Math.floor(timeMinutes);
+            const secs = Math.round((timeMinutes - mins) * 60);
+            return `${mins}:${String(secs).padStart(2, '0')}`;
         }
 
         // Connect to SSE events
