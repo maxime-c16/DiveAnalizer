@@ -2669,57 +2669,98 @@ class DiveGalleryGenerator:
         function acceptAll() {{
             if (!confirm('Keep remaining dives and close review?')) return;
 
+            // DEBUG: Log total dives
+            const allCards = document.querySelectorAll('.dive-card');
+            console.log('[acceptAll] Total dive cards on page:', allCards.length);
+
             // Collect selected files to delete (those checked)
             const selected = document.querySelectorAll('.dive-checkbox:checked');
             const files = [];
             selected.forEach(cb => {{
                 const card = cb.closest('.dive-card');
-                files.push(card.dataset.file);
+                const filename = card.dataset.file;
+                files.push(filename);
+                console.log('[acceptAll] Selected for deletion:', filename);
             }});
+
+            console.log('[acceptAll] Total files to delete:', files.length);
+            console.log('[acceptAll] Files array:', files);
 
             if (files.length === 0) {{
                 // No files to delete - request server shutdown and close
-                showMessage('✅ Review complete! Requesting server shutdown...', 'success');
+                console.log('[acceptAll] No files selected, just shutting down server');
+                showMessage('✅ Review complete! Shutting down server...', 'success');
                 if (window.SERVER_URL) {{
                     fetch(`${{window.SERVER_URL}}/shutdown`, {{ method: 'POST' }})
-                        .finally(() => setTimeout(() => {{ window.close(); }}, 400));
+                        .then(res => {{
+                            console.log('[acceptAll] Shutdown request sent, response:', res.status);
+                            return res;
+                        }})
+                        .finally(() => {{
+                            console.log('[acceptAll] Shutdown complete, closing window');
+                            setTimeout(() => {{ window.close(); }}, 500);
+                        }})
+                        .catch(err => {{
+                            console.error('[acceptAll] Shutdown error:', err);
+                            setTimeout(() => {{ window.close(); }}, 500);
+                        }});
                 }} else {{
-                    setTimeout(() => {{ window.close(); }}, 400);
+                    setTimeout(() => {{ window.close(); }}, 500);
                 }}
                 return;
             }}
 
-            // If server available, request deletion first
+            // If server available, request deletion first, then shutdown
             if (window.SERVER_URL) {{
-                showMessage(`🗑️ Deleting ${{files.length}} selected file(s) before close...`, 'info');
+                showMessage(`🗑️ Deleting ${{files.length}} selected file(s)...`, 'info');
+                console.log('[acceptAll] Sending delete request with files:', files);
                 fetch(`${{window.SERVER_URL}}/delete`, {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ files }})
                 }})
-                .then(res => res.json())
+                .then(res => {{
+                    console.log('[acceptAll] Delete response status:', res.status);
+                    return res.json();
+                }})
                 .then(data => {{
                     const deleted = data.deleted || [];
                     const failed = data.failed || [];
 
-                    if (deleted.length > 0) {{
-                        showMessage(`✅ Deleted ${{deleted.length}} file(s). Closing...`, 'success');
-                    }} else if (failed.length > 0) {{
-                        showMessage(`⚠️ Some files failed to delete. Closing anyway.`, 'warning');
-                    }} else {{
-                        showMessage('⚠️ No files deleted. Closing...', 'warning');
-                    }}
+                    console.log('[acceptAll] Server deleted files:', deleted);
+                    console.log('[acceptAll] Server failed files:', failed);
 
-                    setTimeout(() => {{ window.close(); }}, 800);
+                    let message = '';
+                    if (deleted.length > 0) {{
+                        message = `✅ Deleted ${{deleted.length}} file(s). `;
+                    }}
+                    if (failed.length > 0) {{
+                        message += `⚠️ ${{failed.length}} file(s) failed to delete. `;
+                    }}
+                    message += 'Shutting down server...';
+                    showMessage(message, 'success');
+
+                    // Now request server shutdown
+                    console.log('[acceptAll] Requesting server shutdown');
+                    return fetch(`${{window.SERVER_URL}}/shutdown`, {{ method: 'POST' }});
+                }})
+                .then(res => {{
+                    console.log('[acceptAll] Shutdown response status:', res.status);
+                    showMessage('✅ Server shutdown complete. Closing...', 'success');
+                    setTimeout(() => {{
+                        console.log('[acceptAll] Closing window');
+                        window.close();
+                    }}, 500);
                 }})
                 .catch(err => {{
-                    console.error('Delete request failed:', err);
-                    showMessage('❌ Delete request failed. Closing anyway.', 'error');
-                    setTimeout(() => {{ window.close(); }}, 800);
+                    console.error('[acceptAll] Operation failed:', err);
+                    showMessage('❌ Operation failed but closing window.', 'error');
+                    setTimeout(() => {{ window.close(); }}, 500);
                 }});
             }} else {{
+                console.log('[acceptAll] No SERVER_URL, cannot delete. Closing without deleting');
                 showMessage('⚠️ Cannot delete files without server. Closing without deleting.', 'warning');
-                setTimeout(() => {{ window.close(); }}, 800);
+                setTimeout(() => {{ window.close(); }}, 500);
             }}
         }}
 
