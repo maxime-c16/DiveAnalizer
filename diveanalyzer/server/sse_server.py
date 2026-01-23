@@ -349,8 +349,9 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             self._send_sse_event("connected", {"message": "SSE stream established"})
 
             # Stream events indefinitely
+            # Use 60 second timeout for keepalive to reduce connection churn
             while True:
-                event = self.event_queue.get_event(subscriber_queue, timeout=30.0)
+                event = self.event_queue.get_event(subscriber_queue, timeout=60.0)
 
                 if event:
                     # Send event to client

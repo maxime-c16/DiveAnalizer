@@ -409,6 +409,7 @@ def process(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DiveAnalyzer - Live Review</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏊</text></svg>">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
@@ -566,14 +567,19 @@ def process(
             });
 
             eventSource.onerror = (e) => {
-                console.error('SSE connection error:', e);
-                if (e.readyState === EventSource.CLOSED) {
+                // Suppress repetitive error logging but handle connection loss
+                if (eventSource.readyState === EventSource.CLOSED) {
+                    console.warn('SSE connection closed by server');
                     document.getElementById('statusMessage').textContent =
-                        '⏳ Loading real gallery...';
+                        '✅ Processing complete - preparing gallery...';
+                } else if (eventSource.readyState === EventSource.CONNECTING) {
+                    // Attempting to reconnect - suppress error
+                    console.debug('Reconnecting to event stream...');
                 }
+                // Don't log error object (too verbose in console)
             };
         } catch (err) {
-            console.error('Could not connect to event stream:', err);
+            console.warn('Could not connect to event stream:', err.message);
         }
     </script>
 </body>
