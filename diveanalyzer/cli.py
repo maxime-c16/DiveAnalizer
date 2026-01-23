@@ -410,36 +410,171 @@ def process(
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DiveAnalyzer - Live Review</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 8px; padding: 40px; text-align: center; }
-        .status { font-size: 24px; margin: 20px 0; }
-        .spinner { display: inline-block; width: 40px; height: 40px; border: 4px solid #ddd; border-top-color: #0066cc; border-radius: 50%; animation: spin 1s linear infinite; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header h1 { font-size: 28px; margin-bottom: 5px; color: #333; }
+        .header p { color: #999; font-size: 14px; }
+        .status-dashboard { background: white; border-radius: 8px; padding: 30px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .phase-indicator { display: flex; align-items: center; gap: 15px; margin-bottom: 30px; }
+        .phase-icon { font-size: 48px; }
+        .phase-info h2 { font-size: 20px; margin-bottom: 5px; color: #333; }
+        .phase-info p { color: #999; font-size: 14px; }
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .metric { background: #f9f9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #0066cc; }
+        .metric-label { color: #999; font-size: 12px; text-transform: uppercase; margin-bottom: 10px; }
+        .metric-value { font-size: 28px; font-weight: bold; color: #0066cc; }
+        .progress-container { margin-top: 30px; }
+        .progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #999; margin-bottom: 10px; }
+        .progress-bar-wrapper { width: 100%; height: 8px; background: #e5e5e5; border-radius: 4px; overflow: hidden; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #0066cc, #00a8ff); transition: width 0.3s ease; }
+        .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #e5e5e5; border-top-color: #0066cc; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .message { color: #666; font-size: 16px; margin-top: 20px; }
+        .message-box { background: #f0f4f8; border-left: 4px solid #0066cc; padding: 15px; border-radius: 4px; color: #333; font-size: 14px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🏊 DiveAnalyzer</h1>
-        <h2>Live Review Gallery</h2>
-        <div class="spinner"></div>
-        <div class="status">Processing video...</div>
-        <div class="message">Detecting dives and generating gallery...</div>
-        <p id="progress"></p>
+        <div class="header">
+            <h1>🏊 DiveAnalyzer Live Review</h1>
+            <p>Processing your video in real-time...</p>
+        </div>
+
+        <div class="status-dashboard">
+            <div class="phase-indicator">
+                <div class="phase-icon">📊</div>
+                <div class="phase-info">
+                    <h2 id="phaseLabel">Audio Detection</h2>
+                    <p id="phaseStatus">Analyzing audio for splash peaks...</p>
+                </div>
+                <div style="margin-left: auto;">
+                    <div class="spinner"></div>
+                </div>
+            </div>
+
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-label">Dives Found</div>
+                    <div class="metric-value" id="metricDives">0/0</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Processing Speed</div>
+                    <div class="metric-value" id="metricSpeed">0.0 dives/min</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Time Remaining</div>
+                    <div class="metric-value" id="metricTime">--:--</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Thumbnails Ready</div>
+                    <div class="metric-value" id="metricThumbnails">0/0</div>
+                </div>
+            </div>
+
+            <div class="progress-container">
+                <div class="progress-label">
+                    <span id="progressLabel">Overall Progress</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar-wrapper">
+                    <div class="progress-bar-fill" id="progressBarFill" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="message-box" id="statusMessage" style="margin-top: 20px;">
+                ⏳ Waiting for dives to be detected...
+            </div>
+        </div>
     </div>
+
     <script>
-        const serverUrl = window.location.origin;
-        const eventSource = new EventSource(serverUrl + '/events');
-        eventSource.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            console.log('Event:', data);
+        const phaseNames = {
+            'phase_1': '🔊 Audio Detection',
+            'phase_2': '🎬 Motion Detection',
+            'phase_3': '👤 Person Detection',
+            'extraction': '✂️ Clip Extraction',
+            'thumbnails': '🖼️ Thumbnail Generation'
         };
-        eventSource.addEventListener('status_update', (e) => {
-            const data = JSON.parse(e.data);
-            document.querySelector('.message').innerHTML =
-                `Phase: ${data.phase_name || 'Processing'}<br>` +
-                `Dives: ${data.dives_found || 0}/${data.dives_expected || 0}`;
-        });
+
+        const phaseStatuses = {
+            'phase_1': 'Analyzing audio for splash peaks...',
+            'phase_2': 'Detecting motion bursts in video...',
+            'phase_3': 'Detecting person departures...',
+            'extraction': 'Extracting dive clips...',
+            'thumbnails': 'Generating thumbnails for each dive...'
+        };
+
+        function updateStatus(statusData) {
+            const phase = statusData.phase || 'phase_1';
+            const phaseName = phaseNames[phase] || statusData.phase_name || 'Processing';
+            const phaseStatus = phaseStatuses[phase] || 'Processing...';
+
+            document.getElementById('phaseLabel').textContent = phaseName;
+            document.getElementById('phaseStatus').textContent = phaseStatus;
+
+            const diveText = \`\${statusData.dives_found || 0}/\${statusData.dives_expected || 0}\`;
+            const speedText = \`\${(statusData.processing_speed || 0).toFixed(2)} dives/min\`;
+            const thumbText = \`\${statusData.thumbnails_ready || 0}/\${statusData.thumbnails_expected || 0}\`;
+
+            document.getElementById('metricDives').textContent = diveText;
+            document.getElementById('metricSpeed').textContent = speedText;
+            document.getElementById('metricThumbnails').textContent = thumbText;
+
+            const percent = Math.min(100, statusData.progress_percent || 0);
+            document.getElementById('progressBarFill').style.width = percent + '%';
+            document.getElementById('progressPercent').textContent = Math.round(percent) + '%';
+
+            // Update status message
+            if (statusData.dives_found > 0) {
+                document.getElementById('statusMessage').textContent =
+                    \`✅ Found \${statusData.dives_found} dive(s) - Processing...\`;
+                document.getElementById('statusMessage').style.borderLeftColor = '#28a745';
+                document.getElementById('statusMessage').style.background = '#e8f5e9';
+            }
+        }
+
+        // Connect to SSE events
+        const serverUrl = window.location.origin;
+        try {
+            const eventSource = new EventSource(serverUrl + '/events');
+
+            eventSource.addEventListener('status_update', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    updateStatus(data);
+                } catch (err) {
+                    console.error('Error parsing status_update:', err);
+                }
+            });
+
+            eventSource.addEventListener('connected', (e) => {
+                console.log('Connected to live event stream');
+                document.getElementById('statusMessage').textContent = '🔗 Connected to server';
+            });
+
+            eventSource.addEventListener('gallery_ready', (e) => {
+                try {
+                    console.log('Gallery ready - refreshing page...');
+                    document.getElementById('statusMessage').textContent = '✅ Gallery ready - Loading...';
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } catch (err) {
+                    console.error('Error handling gallery_ready:', err);
+                }
+            });
+
+            eventSource.onerror = (e) => {
+                console.error('SSE connection error:', e);
+                if (e.readyState === EventSource.CLOSED) {
+                    document.getElementById('statusMessage').textContent =
+                        '⏳ Loading real gallery...';
+                }
+            };
+        } catch (err) {
+            console.error('Could not connect to event stream:', err);
+        }
     </script>
 </body>
 </html>"""
@@ -451,6 +586,15 @@ def process(
                 if server.start():
                     click.echo(f"✓ Server running at {server.get_url()}")
                     click.echo(f"  Events: {server.get_events_url()}")
+
+                    # FEAT-06: Auto-launch browser immediately (don't wait for processing)
+                    if not no_open:
+                        try:
+                            webbrowser.open(f"http://localhost:{server_port}")
+                            click.echo(f"🌐 Opening browser at http://localhost:{server_port}")
+                        except Exception as e:
+                            if verbose:
+                                click.echo(f"ℹ️  Could not open browser automatically: {e}")
                 else:
                     click.echo("⚠️  Failed to start server, continuing without live review")
                     server = None
@@ -830,24 +974,20 @@ def process(
                     gallery_path = generator.generate_html()
 
                     click.echo(f"✓ Gallery created: {gallery_path}")
+
+                    # Emit event to notify browser that real gallery is ready
+                    # Browser should refresh to see actual dive cards instead of placeholder
+                    if server:
+                        server.emit("gallery_ready", {
+                            "message": "Real gallery is ready. Refreshing browser...",
+                            "dives_count": success_count,
+                        })
                 except Exception as e:
                     click.echo(f"⚠️  Could not create gallery: {e}")
                     server_config = None  # Don't try to start server without gallery
 
-            # Browser auto-launch if server was started and gallery is ready
-            # Server was already started early (if enable_server=True)
-            # Now we just launch the browser to view the real gallery
-            if server and success_count > 0 and not no_open:
-                try:
-                    webbrowser.open(f"http://localhost:{server_port}")
-                    click.echo(f"\n🌐 Opening browser at http://localhost:{server_port}")
-                except Exception as e:
-                    # Silent fail - don't crash on browser open errors
-                    if verbose:
-                        click.echo(f"ℹ️  Could not open browser automatically: {e}")
-
             # If no server was requested, open gallery in browser directly
-            elif success_count > 0 and not enable_server:
+            if success_count > 0 and not enable_server:
                 try:
                     generator.open_in_browser(Path(gallery_path))
                 except Exception as e:
