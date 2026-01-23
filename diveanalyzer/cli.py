@@ -513,9 +513,9 @@ def process(
             document.getElementById('phaseLabel').textContent = phaseName;
             document.getElementById('phaseStatus').textContent = phaseStatus;
 
-            const diveText = \`\${statusData.dives_found || 0}/\${statusData.dives_expected || 0}\`;
-            const speedText = \`\${(statusData.processing_speed || 0).toFixed(2)} dives/min\`;
-            const thumbText = \`\${statusData.thumbnails_ready || 0}/\${statusData.thumbnails_expected || 0}\`;
+            const diveText = `${statusData.dives_found || 0}/${statusData.dives_expected || 0}`;
+            const speedText = `${(statusData.processing_speed || 0).toFixed(2)} dives/min`;
+            const thumbText = `${statusData.thumbnails_ready || 0}/${statusData.thumbnails_expected || 0}`;
 
             document.getElementById('metricDives').textContent = diveText;
             document.getElementById('metricSpeed').textContent = speedText;
@@ -528,7 +528,7 @@ def process(
             // Update status message
             if (statusData.dives_found > 0) {
                 document.getElementById('statusMessage').textContent =
-                    \`✅ Found \${statusData.dives_found} dive(s) - Processing...\`;
+                    `✅ Found ${statusData.dives_found} dive(s) - Processing...`;
                 document.getElementById('statusMessage').style.borderLeftColor = '#28a745';
                 document.getElementById('statusMessage').style.background = '#e8f5e9';
             }
