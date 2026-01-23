@@ -594,11 +594,11 @@ def process(
 
             eventSource.addEventListener('gallery_ready', (e) => {
                 try {
-                    console.log('Gallery ready - refreshing page...');
-                    document.getElementById('statusMessage').textContent = '✅ Gallery ready - Loading...';
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
+                    const data = JSON.parse(e.data);
+                    console.log('Gallery ready - reloading page with real gallery...');
+                    document.getElementById('statusMessage').textContent = '✅ Gallery loaded! Switching to real gallery...';
+                    // Reload immediately to show real gallery (removed 1s delay)
+                    window.location.reload();
                 } catch (err) {
                     console.error('Error handling gallery_ready:', err);
                 }
@@ -1012,6 +1012,20 @@ def process(
             # This must be done before the server starts serving requests
             if success_count > 0:
                 try:
+                    # Emit status that we're preparing the real gallery
+                    if server:
+                        server.emit("status_update", {
+                            "phase": "gallery_generation",
+                            "phase_name": "Preparing Gallery",
+                            "dives_found": success_count,
+                            "dives_expected": len(dives),
+                            "thumbnails_ready": 0,
+                            "thumbnails_expected": len(dives),
+                            "processing_speed": 0,
+                            "elapsed_seconds": 0,
+                            "progress_percent": 95,
+                        })
+
                     click.echo(f"\n📸 Creating review gallery...")
                     generator = DiveGalleryGenerator(output_dir, Path(video_path).name)
                     generator.scan_dives()
@@ -1023,7 +1037,7 @@ def process(
                     # Browser should refresh to see actual dive cards instead of placeholder
                     if server:
                         server.emit("gallery_ready", {
-                            "message": "Real gallery is ready. Refreshing browser...",
+                            "message": "Real gallery is ready. Switching view...",
                             "dives_count": success_count,
                         })
                 except Exception as e:
