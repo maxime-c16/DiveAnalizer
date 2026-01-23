@@ -14,6 +14,8 @@ import json
 import logging
 import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +24,12 @@ from typing import Optional, Dict, Any, Callable, List
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid circular dependencies
+def get_extract_dive_clip():
+    """Import extract_dive_clip on demand."""
+    from diveanalyzer.extraction.ffmpeg import extract_dive_clip
+    return extract_dive_clip
 
 
 class EventQueue:
@@ -158,13 +166,18 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             self._send_error(404, "Not Found")
 
     def do_POST(self):
-        """Handle POST requests for actions like deleting files."""
+        """Handle POST requests for actions like deleting files and extracting selected dives."""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
         # Delete files endpoint
         if path == "/delete":
             self._handle_delete_files()
+            return
+
+        # Extract selected dives endpoint
+        if path == "/extract_selected":
+            self._handle_extract_selected()
             return
 
         # Shutdown endpoint - request server to stop and exit
@@ -174,6 +187,224 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
 
         # Unknown POST
         self._send_error(404, "Not Found")
+
+    def _handle_extract_selected(self):
+        """Handle extraction of selected dives (TICKET-206, TICKET-301).
+
+        Expects JSON body: {"selected_dive_ids": [1, 2, 5, ...]}
+
+        Process:
+        1. Parse selected dive IDs from request
+        2. Validate against available dives in server.dives_metadata
+        3. Start parallel extraction with ThreadPoolExecutor (4 workers)
+        4. Emit SSE events for progress tracking
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b''
+            payload = json.loads(body.decode('utf-8') or '{}')
+
+            if not isinstance(payload, dict):
+                return self._send_error(400, "Invalid payload: must be JSON object")
+
+            selected_dive_ids = payload.get('selected_dive_ids', [])
+            if not isinstance(selected_dive_ids, list):
+                return self._send_error(400, "Invalid payload: 'selected_dive_ids' must be a list")
+
+            if not selected_dive_ids:
+                return self._send_error(400, "No dives selected for extraction")
+
+            # Validate server has required attributes
+            if not hasattr(self._server_instance, 'dives_metadata'):
+                return self._send_error(500, "Server not properly initialized: no dives metadata")
+            if not hasattr(self._server_instance, 'video_path'):
+                return self._send_error(500, "Server not properly initialized: no video path")
+            if not hasattr(self._server_instance, 'output_dir'):
+                return self._send_error(500, "Server not properly initialized: no output directory")
+
+            dives_metadata = self._server_instance.dives_metadata
+            video_path = self._server_instance.video_path
+            output_dir = self._server_instance.output_dir
+            audio_enabled = getattr(self._server_instance, 'audio_enabled', True)
+
+            # Validate all selected IDs exist (dive IDs are 1-indexed based on dive_number)
+            available_dive_numbers = {
+                dive.dive_number: dive
+                for dive in dives_metadata
+                if hasattr(dive, 'dive_number')
+            }
+
+            invalid_ids = [did for did in selected_dive_ids if did not in available_dive_numbers]
+            if invalid_ids:
+                return self._send_error(
+                    400,
+                    f"Invalid dive IDs: {invalid_ids}. Available: {list(available_dive_numbers.keys())}"
+                )
+
+            # Filter dives to only selected ones
+            selected_dives = [
+                available_dive_numbers[did]
+                for did in selected_dive_ids
+            ]
+
+            # Create output directory
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            # Generate job ID for tracking
+            job_id = str(uuid.uuid4())
+
+            # Send acknowledgment response
+            response = {
+                "status": "started",
+                "selected_count": len(selected_dives),
+                "extraction_job_id": job_id,
+                "message": f"Extracting {len(selected_dives)} selected dives..."
+            }
+            self._send_json_response(response)
+
+            # Start extraction in background thread to avoid blocking HTTP response
+            if self.event_queue:
+                extraction_thread = threading.Thread(
+                    target=self._extract_selected_dives_background,
+                    args=(
+                        selected_dives,
+                        video_path,
+                        output_dir,
+                        audio_enabled,
+                        job_id,
+                        self.event_queue,
+                    ),
+                    daemon=True
+                )
+                extraction_thread.start()
+
+        except json.JSONDecodeError:
+            return self._send_error(400, "Invalid JSON in request body")
+        except Exception as e:
+            logger.exception('Error handling extract_selected request')
+            self._send_error(500, f'Error processing extraction request: {e}')
+
+    @staticmethod
+    def _extract_selected_dives_background(
+        selected_dives,
+        video_path: str,
+        output_dir: str,
+        audio_enabled: bool,
+        job_id: str,
+        event_queue,
+    ):
+        """Background thread worker for parallel dive extraction.
+
+        Args:
+            selected_dives: List of DiveEvent objects to extract
+            video_path: Path to source video
+            output_dir: Directory to save extracted dives
+            audio_enabled: Whether to include audio
+            job_id: Unique job ID for tracking
+            event_queue: EventQueue for emitting SSE events
+        """
+        extract_dive_clip = get_extract_dive_clip()
+
+        total_count = len(selected_dives)
+        extracted_count = 0
+        failed_count = 0
+        failed_dives = []
+
+        # Emit extraction start event
+        event_queue.publish('extraction_started', {
+            'job_id': job_id,
+            'dive_count': total_count,
+            'message': f'Starting extraction of {total_count} dives...'
+        })
+
+        # Use ThreadPoolExecutor with 4 worker threads
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+
+            # Submit all extraction tasks
+            for dive in selected_dives:
+                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+                output_filename = f"dive_{dive_number:03d}.mp4"
+                output_path = Path(output_dir) / output_filename
+
+                future = executor.submit(
+                    extract_dive_clip,
+                    video_path,
+                    dive.start_time,
+                    dive.end_time,
+                    str(output_path),
+                    audio_enabled=audio_enabled,
+                )
+                futures[future] = {
+                    'dive': dive,
+                    'output_path': output_path,
+                    'output_filename': output_filename,
+                }
+
+            # Process results as they complete
+            for future in futures:
+                dive_info = futures[future]
+                dive = dive_info['dive']
+                output_path = dive_info['output_path']
+                output_filename = dive_info['output_filename']
+                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+
+                try:
+                    # Wait for extraction to complete
+                    future.result()
+
+                    # Check if file was created and get size
+                    if output_path.exists():
+                        size_mb = output_path.stat().st_size / (1024 * 1024)
+                        extracted_count += 1
+
+                        # Emit dive extracted event
+                        event_queue.publish('dive_extracted', {
+                            'job_id': job_id,
+                            'dive_id': dive_number,
+                            'success': True,
+                            'filename': output_filename,
+                            'size_mb': f"{size_mb:.2f}",
+                            'extracted_count': extracted_count,
+                            'total_count': total_count,
+                        })
+                        logger.info(f"Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
+                    else:
+                        raise RuntimeError(f"Output file not created: {output_path}")
+
+                except Exception as e:
+                    failed_count += 1
+                    failed_dives.append({
+                        'dive_id': dive_number,
+                        'error': str(e)
+                    })
+
+                    # Emit dive extraction failure event
+                    event_queue.publish('dive_extracted', {
+                        'job_id': job_id,
+                        'dive_id': dive_number,
+                        'success': False,
+                        'error': str(e),
+                        'extracted_count': extracted_count,
+                        'total_count': total_count,
+                    })
+                    logger.error(f"Failed to extract dive {dive_number}: {e}")
+
+        # Emit extraction complete event
+        event_queue.publish('extraction_complete', {
+            'job_id': job_id,
+            'extracted_count': extracted_count,
+            'failed_count': failed_count,
+            'total_count': total_count,
+            'failed_dives': failed_dives,
+            'message': f'Extraction complete: {extracted_count}/{total_count} dives extracted'
+                       + (f', {failed_count} failed' if failed_count > 0 else ''),
+        })
+
+        logger.info(
+            f"Extraction job {job_id} complete: "
+            f"{extracted_count}/{total_count} extracted, {failed_count} failed"
+        )
 
     def _handle_delete_files(self):
         """Handle deletion of selected dive files.
