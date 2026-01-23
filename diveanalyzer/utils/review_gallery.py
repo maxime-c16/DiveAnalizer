@@ -63,43 +63,38 @@ class DiveGalleryGenerator:
                 print(f"Warning: Could not determine duration for {video_path}")
                 return None
 
-            # Calibrated frame positions based on ground truth analysis:
-            # - Flight phase: 22-37 frames at start (20-25% of typical 1-1.5s dive)
-            # - Splash moment: around 65-70% (entry technique visible)
-            # - Submersion: 95%+ (completion of entry)
+            # Determine time within video for thumbnail
             if percentage is not None:
-                # Use explicit percentage (0.0 to 1.0)
                 time_sec = duration * percentage
             elif position == "start":
-                time_sec = duration * 0.20  # 20% - early flight phase showing takeoff
+                time_sec = duration * 0.20
             elif position == "end":
-                time_sec = duration * 0.95  # 95% - near complete submersion
-            else:  # middle
-                time_sec = duration * 0.65  # 65% - splash/entry moment
+                time_sec = duration * 0.95
+            else:
+                time_sec = duration * 0.65
 
             # Create temp file for thumbnail
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 thumb_path = tmp.name
 
-            # Extract thumbnail - higher resolution for bigger display
+            # Extract thumbnail using ffmpeg
             cmd = [
                 "ffmpeg",
                 "-ss", str(time_sec),
                 "-i", str(video_path),
                 "-vframes", "1",
                 "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease",
-                "-q:v", str(quality),  # Quality (lower = better, but slower)
-                "-y",  # Overwrite
-                thumb_path
+                "-q:v", str(quality),
+                "-y",
+                str(thumb_path),
             ]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
-            # Convert to base64
+            # Convert to base64 if produced
             if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
                 with open(thumb_path, "rb") as f:
                     img_data = base64.b64encode(f.read()).decode()
-                # Clean up temp file
                 try:
                     os.unlink(thumb_path)
                 except:
@@ -119,33 +114,25 @@ class DiveGalleryGenerator:
         """Extract 8 evenly-spaced frames from dive video for timeline.
 
         Frames at: 0%, 12.5%, 25%, 37.5%, 50%, 62.5%, 75%, 87.5%
-        Resolution: 720x1280 (portrait, high quality for small display)
-        Quality: 3 (best quality)
-
-        Args:
-            video_path: Path to dive video file
-
-        Returns:
-            List of 8 base64 data URLs, or empty list if failed
+        Returns a list of base64 data URLs or None entries for failures.
         """
         frames = []
-        # 8 frames at these percentages
         percentages = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]
 
         for pct in percentages:
-            frame_data = self.extract_thumbnail(
-                video_path,
-                position="middle",  # ignored when percentage is set
-                width=720,
-                height=1280,
-                quality=3,
-                percentage=pct
-            )
-            if frame_data:
-                frames.append(frame_data)
-            else:
-                # Use a placeholder on failure
-                frames.append(None)
+            try:
+                frame_data = self.extract_thumbnail(
+                    video_path,
+                    position="middle",
+                    width=720,
+                    height=1280,
+                    quality=3,
+                    percentage=pct,
+                )
+            except Exception:
+                frame_data = None
+
+            frames.append(frame_data)
 
         return frames
 
@@ -201,7 +188,7 @@ class DiveGalleryGenerator:
             output_path = self.output_dir / "review_gallery.html"
 
         # Generate HTML
-        html = f"""<!DOCTYPE html>
+        html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1447,6 +1434,9 @@ class DiveGalleryGenerator:
             </div>
 """
 
+        # Replace simple Python placeholders inside the static HTML (avoids f-string parsing of JS braces)
+        html = html.replace('{len(self.dives)}', str(len(self.dives)))
+
         # Add dive cards
         for dive in self.dives:
             thumbnails_html = ""
@@ -1486,7 +1476,7 @@ class DiveGalleryGenerator:
             </div>
 """
 
-        html += f"""
+        html += """
         </div>
 
         <div class="footer">
@@ -1730,19 +1720,37 @@ class DiveGalleryGenerator:
             }}
 
             _saveToCache(event) {{
-                // Add to in-memory cache
-                this.cachedEvents.push(event);
-
-                // Trim if too large
-                if (this.cachedEvents.length > this.maxCachedEvents) {{
-                    this.cachedEvents.shift();
-                }}
-
-                // Save to localStorage
                 try {{
-                    localStorage.setItem('diveanalyzer_events', JSON.stringify(this.cachedEvents));
+                    // Skip caching very large events (thumbnails) to avoid localStorage quota errors
+                    if (event && event.event_type && event.event_type.startsWith && event.event_type.startsWith('thumbnail')) {{
+                        // Don't cache thumbnail_frame_ready or thumbnail_ready events
+                        return;
+                    }}
+
+                    // Avoid caching extremely large payloads
+                    let approx = '';
+                    try {{ approx = JSON.stringify(event); }} catch (e) {{ approx = ''; }}
+                    if (approx.length > 100000) {{
+                        console.warn('SSE: Skipping caching of oversized event');
+                        return;
+                    }}
+
+                    // Add to in-memory cache
+                    this.cachedEvents.push(event);
+
+                    // Trim if too large
+                    if (this.cachedEvents.length > this.maxCachedEvents) {{
+                        this.cachedEvents.shift();
+                    }}
+
+                    // Save to localStorage (best-effort)
+                    try {{
+                        localStorage.setItem('diveanalyzer_events', JSON.stringify(this.cachedEvents));
+                    }} catch (e) {{
+                        console.warn('SSE: Could not save to localStorage:', e);
+                    }}
                 }} catch (e) {{
-                    console.warn('SSE: Could not save to localStorage:', e);
+                    console.warn('SSE: _saveToCache internal error:', e);
                 }}
             }}
 
@@ -1867,6 +1875,24 @@ class DiveGalleryGenerator:
                         updateThumbnailInPlace(data.dive_id, data.frames);
                     }}
 
+                    // FEAT-09: Handle files_deleted events to keep UI in sync
+                    if (eventType === 'files_deleted' && data.deleted) {{
+                        try {{
+                            const deletedFiles = data.deleted;
+                            console.log('SSE: files_deleted event received:', deletedFiles);
+                            deletedFiles.forEach(fname => {{
+                                const card = document.querySelector(`.dive-card[data-file="${{fname}}"]`);
+                                if (card) {{
+                                    card.style.opacity = '0';
+                                    card.style.transform = 'scale(0.9)';
+                                    setTimeout(() => {{ card.style.display = 'none'; updateStats(); }}, 300);
+                                }}
+                            }});
+                        }} catch (e) {{
+                            console.warn('Error handling files_deleted event:', e);
+                        }}
+                    }}
+
                     // FEAT-04: Handle thumbnail_frame_ready events for individual frame updates
                     if (eventType === 'thumbnail_frame_ready' && data.dive_id !== undefined) {{
                         updateThumbnailFrame(data.dive_id, data.frame_index, data.frame_data);
@@ -1985,50 +2011,51 @@ class DiveGalleryGenerator:
                 return 'info';
             }}
 
-            _startPolling() {{
+            _startPolling() {
                 if (this.pollingActive) return;
 
                 console.log('SSE: Starting fallback polling every 3 seconds');
                 this.pollingActive = true;
                 this._pollOnce();  // Start immediately
-            }}
+            }
 
-            _pollOnce() {{
+            _pollOnce() {
                 if (!this.pollingActive) return;
 
-                fetch(`${{this.serverUrl}}/events-history`)
+                fetch(`${this.serverUrl}/events-history`)
                     .then(res => res.json())
-                    .then(data => {{
-                        if (data && data.events && Array.isArray(data.events)) {{
+                    .then(data => {
+                        if (data && data.events && Array.isArray(data.events)) {
                             // Process new events not yet cached
-                            data.events.forEach(event => {{
+                            data.events.forEach(event => {
                                 const cached = this.cachedEvents.some(e =>
                                     e.timestamp === event.timestamp && e.event_type === event.event_type
                                 );
-                                if (!cached) {{
-                                    this._handleEvent(event.event_type, {{ data: event.data }});
-                                }}
-                            }});
-                        }}
-                    }})
-                    .catch(err => {{
-                        console.debug('Polling error:', err);
-                    }})
-                    .finally(() => {{
-                        if (this.pollingActive) {{
+                                if (!cached) {
+                                    this._handleEvent(event.event_type, { data: event.data });
+                                }
+                            });
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Polling failed:', err);
+                        this._logEvent('error', 'Polling failed', 'error');
+                    })
+                    .finally(() => {
+                        if (this.pollingActive) {
                             this.pollingInterval = setTimeout(() => this._pollOnce(), 3000);
-                        }}
-                    }});
-            }}
+                        }
+                    });
+            }
 
-            _stopPolling() {{
-                if (this.pollingInterval) {{
+            _stopPolling() {
+                if (this.pollingInterval) {
                     clearTimeout(this.pollingInterval);
                     this.pollingInterval = null;
-                }}
+                }
                 this.pollingActive = false;
                 console.log('SSE: Stopped polling');
-            }}
+            }
 
             _showConnectionBanner(state, attemptNumber = 0) {{
                 const banner = document.getElementById('connectionBanner');
@@ -2265,6 +2292,14 @@ class DiveGalleryGenerator:
 
             eventConsumer = new EventStreamConsumer(serverUrl);
             eventConsumer.setStatusDashboard(statusDashboard);
+
+            // Expose server URL globally for other functions (delete requests)
+            try {{
+                window.SERVER_URL = serverUrl;
+                console.log('Server URL set to', window.SERVER_URL);
+            }} catch (e) {{
+                // ignore if window not available
+            }}
 
             // Set up retry button in connection banner
             const retryBtn = document.getElementById('bannerRetryBtn');
@@ -2525,29 +2560,63 @@ class DiveGalleryGenerator:
                 showMessage('❌ No dives selected for deletion', 'error');
                 return;
             }}
+            if (!confirm(`Delete ${{selected.length}} dive(s)? This cannot be undone.`)) {{
+                return;
+            }}
 
-            if (confirm(`Delete ${{selected.length}} dive(s)? This cannot be undone.`)) {{
-                const files = [];
-                selected.forEach(checkbox => {{
-                    const card = checkbox.closest('.dive-card');
-                    files.push(card.dataset.file);
+            const files = [];
+            selected.forEach(checkbox => {{
+                const card = checkbox.closest('.dive-card');
+                files.push(card.dataset.file);
+            }});
+
+            console.log('Files to delete:', files);
+
+            // If server URL is available, request deletion from server first
+            if (window.SERVER_URL) {{
+                showMessage(`🗑️ Deleting ${{files.length}} file(s)...`, 'info');
+                console.log('AcceptAll: sending delete request to server:', files);
+                fetch(`${{window.SERVER_URL}}/delete`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ files }})
+                })
+                .then(res => res.json())
+                .then(data => {
+                    const deleted = data.deleted || [];
+                    const failed = data.failed || [];
+
+                    if (deleted.length > 0) {{
+                        showMessage(`✅ Deleted ${{deleted.length}} file(s)`, 'success');
+
+                        // Remove deleted files from UI
+                        Array.from(selected).forEach((checkbox) => {{
+                            const card = checkbox.closest('.dive-card');
+                            if (deleted.includes(card.dataset.file)) {{
+                                card.style.opacity = '0';
+                                card.style.transform = 'scale(0.9)';
+                                setTimeout(() => {{
+                                    card.style.display = 'none';
+                                    updateStats();
+                                }}, 300);
+                            }}
+                        }});
+                    }} else {{
+                        showMessage('⚠️ No files were deleted', 'warning');
+                    }}
+
+                    if (failed.length > 0) {{
+                        console.warn('Delete failed for:', failed);
+                        showMessage(`⚠️ Failed to delete ${{failed.length}} file(s)`, 'error');
+                    }}
+                }})
+                .catch(err => {{
+                    console.error('Delete request failed:', err);
+                    showMessage('❌ Delete request failed (server error)', 'error');
                 }});
-
-                console.log('Files to delete:', files);
-                showMessage(`✅ Deleted ${{selected.length}} dive(s)`, 'success');
-
-                // Remove from UI with animation
-                Array.from(selected).forEach((checkbox, i) => {{
-                    const card = checkbox.closest('.dive-card');
-                    setTimeout(() => {{
-                        card.style.opacity = '0';
-                        card.style.transform = 'scale(0.9)';
-                        setTimeout(() => {{
-                            card.style.display = 'none';
-                            updateStats();
-                        }}, 300);
-                    }}, i * 50);
-                }});
+            }} else {{
+                // No server: cannot delete files when opened via file://
+                showMessage('⚠️ Cannot delete files without server. Run with --enable-server.', 'error');
             }}
         }}
 
@@ -2573,11 +2642,59 @@ class DiveGalleryGenerator:
         }}
 
         function acceptAll() {{
-            if (confirm('Keep remaining dives and close review?')) {{
-                showMessage('✅ Review complete! Closing...', 'success');
-                setTimeout(() => {{
-                    window.close();
-                }}, 1500);
+            if (!confirm('Keep remaining dives and close review?')) return;
+
+            // Collect selected files to delete (those checked)
+            const selected = document.querySelectorAll('.dive-checkbox:checked');
+            const files = [];
+            selected.forEach(cb => {{
+                const card = cb.closest('.dive-card');
+                files.push(card.dataset.file);
+            }});
+
+            if (files.length === 0) {{
+                // No files to delete - request server shutdown and close
+                showMessage('✅ Review complete! Requesting server shutdown...', 'success');
+                if (window.SERVER_URL) {{
+                    fetch(`${{window.SERVER_URL}}/shutdown`, {{ method: 'POST' }})
+                        .finally(() => setTimeout(() => {{ window.close(); }}, 400));
+                }} else {{
+                    setTimeout(() => {{ window.close(); }}, 400);
+                }}
+                return;
+            }}
+
+            // If server available, request deletion first
+            if (window.SERVER_URL) {{
+                showMessage(`🗑️ Deleting ${{files.length}} selected file(s) before close...`, 'info');
+                fetch(`${{window.SERVER_URL}}/delete`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ files }})
+                }})
+                .then(res => res.json())
+                .then(data => {{
+                    const deleted = data.deleted || [];
+                    const failed = data.failed || [];
+
+                    if (deleted.length > 0) {{
+                        showMessage(`✅ Deleted ${{deleted.length}} file(s). Closing...`, 'success');
+                    }} else if (failed.length > 0) {{
+                        showMessage(`⚠️ Some files failed to delete. Closing anyway.`, 'warning');
+                    }} else {{
+                        showMessage('⚠️ No files deleted. Closing...', 'warning');
+                    }}
+
+                    setTimeout(() => {{ window.close(); }}, 800);
+                }})
+                .catch(err => {{
+                    console.error('Delete request failed:', err);
+                    showMessage('❌ Delete request failed. Closing anyway.', 'error');
+                    setTimeout(() => {{ window.close(); }}, 800);
+                }});
+            }} else {{
+                showMessage('⚠️ Cannot delete files without server. Closing without deleting.', 'warning');
+                setTimeout(() => {{ window.close(); }}, 800);
             }}
         }}
 
@@ -2853,6 +2970,13 @@ MODAL VIEW (open by double-clicking a dive):
 </body>
 </html>
 """
+
+        # Normalize doubled braces (produced to escape Python f-strings) back to single.
+        # Collapse repeated sequences iteratively so patterns like '{{{' -> '{'
+        while '{{' in html:
+            html = html.replace('{{', '{')
+        while '}}' in html:
+            html = html.replace('}}', '}')
 
         # Save HTML
         with open(output_path, "w") as f:

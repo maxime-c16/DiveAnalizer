@@ -839,7 +839,7 @@ def process(
                 thumbnail_thread = threading.Thread(
                     target=generate_thumbnails_deferred,
                     args=(dive_list_for_thumbnails, output_dir, server),
-                    kwargs={"timeout_sec": 30.0},
+                    kwargs={"timeout_sec": 1200.0},
                     daemon=True
                 )
                 thumbnail_thread.start()
@@ -875,9 +875,9 @@ def process(
             else:
                 click.echo("\n🌐 No background thumbnails to wait for")
 
-            click.echo("\n🌐 Server shutting down...")
-            if server.stop():
-                click.echo("✓ Server stopped")
+            click.echo("\n🌐 Server is running for live review until you shut it down.")
+            click.echo(f"  • To stop the server: visit {server.get_url()}/shutdown in your browser or click 'Accept All & Close' in the gallery.")
+            click.echo("  • Or stop the process with Ctrl+C in this terminal.")
 
         click.echo("\n✅ Done!")
 

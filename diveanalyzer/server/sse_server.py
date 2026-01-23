@@ -129,6 +129,8 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
     # Class variables shared across instances
     gallery_path: Optional[str] = None
     event_queue: Optional[EventQueue] = None
+    # Reference to EventServer instance (set by EventServer.start)
+    _server_instance = None
 
     def do_GET(self):
         """Handle GET requests."""
@@ -154,6 +156,105 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         # 404
         else:
             self._send_error(404, "Not Found")
+
+    def do_POST(self):
+        """Handle POST requests for actions like deleting files."""
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+
+        # Delete files endpoint
+        if path == "/delete":
+            self._handle_delete_files()
+            return
+
+        # Shutdown endpoint - request server to stop and exit
+        if path == "/shutdown":
+            self._handle_shutdown()
+            return
+
+        # Unknown POST
+        self._send_error(404, "Not Found")
+
+    def _handle_delete_files(self):
+        """Handle deletion of selected dive files.
+
+        Expects JSON body: {"files": ["dive_001.mp4", ...]}
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b''
+            payload = json.loads(body.decode('utf-8') or '{}')
+            files = payload.get('files', []) if isinstance(payload, dict) else []
+
+            if not isinstance(files, list):
+                return self._send_error(400, "Invalid payload: 'files' must be a list")
+
+            base_dir = Path(self.gallery_path).parent if self.gallery_path else Path('.')
+            deleted = []
+            failed = []
+
+            for fname in files:
+                # Sanity: prevent path traversal
+                if not isinstance(fname, str) or '..' in fname or fname.startswith('/'):
+                    failed.append({"file": fname, "error": "invalid filename"})
+                    continue
+
+                target = base_dir / fname
+                try:
+                    if target.exists() and target.is_file():
+                        target.unlink()
+                        deleted.append(fname)
+                    else:
+                        failed.append({"file": fname, "error": "not found"})
+                except Exception as e:
+                    failed.append({"file": fname, "error": str(e)})
+
+            # Emit event so connected clients can update
+            if self.event_queue:
+                self.event_queue.publish('files_deleted', {
+                    'deleted': deleted,
+                    'failed': failed,
+                })
+
+            # Return JSON response
+            self._send_json_response({
+                'deleted': deleted,
+                'failed': failed,
+                'count': len(deleted),
+            })
+
+        except Exception as e:
+            logger.exception('Error handling delete files request')
+            self._send_error(500, f'Error deleting files: {e}')
+
+    def _handle_shutdown(self):
+        """Handle shutdown request from the gallery UI.
+
+        This signals the EventServer to stop running. It does not attempt to
+        call `stop()` directly to avoid deadlocks when invoked from the
+        server request thread; instead it sets the server's `running` flag
+        to False which causes the server loop to exit gracefully.
+        """
+        try:
+            # Notify clients about shutdown
+            if self.event_queue:
+                self.event_queue.publish('server_shutdown_requested', {
+                    'message': 'Shutdown requested by client'
+                })
+
+            # If we have an EventServer instance, flip its running flag
+            if getattr(DiveReviewSSEHandler, '_server_instance', None):
+                try:
+                    DiveReviewSSEHandler._server_instance.running = False
+                except Exception:
+                    # Best-effort; if it fails, continue to respond
+                    logger.debug('Could not set server running=False from handler')
+
+            self._send_json_response({'status': 'shutdown_requested'})
+            logger.info('Shutdown requested via /shutdown')
+        except Exception as e:
+            logger.exception('Error handling shutdown request')
+            self._send_error(500, f'Error processing shutdown: {e}')
 
     def _serve_gallery(self):
         """Serve the HTML review gallery file."""
@@ -400,15 +501,17 @@ class EventServer:
             # Set class variables for request handler
             DiveReviewSSEHandler.gallery_path = self.gallery_path
             DiveReviewSSEHandler.event_queue = self.event_queue
+            # Expose server instance to handlers so they can request shutdown
+            DiveReviewSSEHandler._server_instance = self
 
             # Create and configure server
             self.server = HTTPServer((self.host, self.port), DiveReviewSSEHandler)
             self.server.timeout = 1.0  # Timeout for socket operations
             self.server.allow_reuse_address = True
 
-            # Start in background thread
+            # Start in background thread (non-daemon so process remains while server runs)
             self.running = True
-            self.thread = threading.Thread(target=self._run_server, daemon=True)
+            self.thread = threading.Thread(target=self._run_server, daemon=False)
             self.thread.start()
 
             self.logger.info(f"Server started on http://{self.host}:{self.port}")
