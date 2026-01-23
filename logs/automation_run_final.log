@@ -1,0 +1,116 @@
+Requirement already satisfied: pip in ./venv/lib/python3.14/site-packages (25.3)
+Collecting setuptools
+  Using cached setuptools-80.10.1-py3-none-any.whl.metadata (6.7 kB)
+Collecting wheel
+  Downloading wheel-0.46.2-py3-none-any.whl.metadata (2.4 kB)
+Requirement already satisfied: packaging>=24.0 in ./venv/lib/python3.14/site-packages (from wheel) (25.0)
+Using cached setuptools-80.10.1-py3-none-any.whl (1.1 MB)
+Downloading wheel-0.46.2-py3-none-any.whl (29 kB)
+Installing collected packages: wheel, setuptools
+
+Successfully installed setuptools-80.10.1 wheel-0.46.2
+Obtaining file:///Users/mcauchy/workflow/DiveAnalizer
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Collecting librosa>=0.10.0 (from diveanalyzer==2.0.0)
+  Using cached librosa-0.11.0-py3-none-any.whl.metadata (8.7 kB)
+Collecting soundfile>=0.12.0 (from diveanalyzer==2.0.0)
+  Using cached soundfile-0.13.1-py2.py3-none-macosx_10_9_x86_64.whl.metadata (16 kB)
+Collecting scipy>=1.10.0 (from diveanalyzer==2.0.0)
+  Using cached scipy-1.17.0-cp314-cp314-macosx_14_0_x86_64.whl.metadata (62 kB)
+Collecting av>=10.0.0 (from diveanalyzer==2.0.0)
+  Using cached av-16.1.0-cp314-cp314-macosx_11_0_x86_64.whl.metadata (4.6 kB)
+Collecting ultralytics>=8.0.0 (from diveanalyzer==2.0.0)
+  Using cached ultralytics-8.4.7-py3-none-any.whl.metadata (38 kB)
+INFO: pip is looking at multiple versions of diveanalyzer to determine which version is compatible with other requirements. This could take a while.
+ERROR: Ignored the following versions that require a different python version: 1.10.0 Requires-Python >=3.8,<3.12; 1.10.0rc1 Requires-Python >=3.8,<3.12; 1.10.0rc2 Requires-Python >=3.8,<3.12; 1.10.1 Requires-Python >=3.8,<3.12; 1.11.0 Requires-Python >=3.9,<3.13; 1.11.0rc1 Requires-Python >=3.9,<3.13; 1.11.0rc2 Requires-Python >=3.9,<3.13; 1.11.1 Requires-Python >=3.9,<3.13; 1.11.2 Requires-Python >=3.9,<3.13; 1.11.3 Requires-Python >=3.9,<3.13; 1.6.2 Requires-Python >=3.7,<3.10; 1.6.3 Requires-Python >=3.7,<3.10; 1.7.0 Requires-Python >=3.7,<3.10; 1.7.1 Requires-Python >=3.7,<3.10; 1.7.2 Requires-Python >=3.7,<3.11; 1.7.3 Requires-Python >=3.7,<3.11; 1.8.0 Requires-Python >=3.8,<3.11; 1.8.0rc1 Requires-Python >=3.8,<3.11; 1.8.0rc2 Requires-Python >=3.8,<3.11; 1.8.0rc3 Requires-Python >=3.8,<3.11; 1.8.0rc4 Requires-Python >=3.8,<3.11; 1.8.1 Requires-Python >=3.8,<3.11; 1.9.0 Requires-Python >=3.8,<3.12; 1.9.0rc1 Requires-Python >=3.8,<3.12; 1.9.0rc2 Requires-Python >=3.8,<3.12; 1.9.0rc3 Requires-Python >=3.8,<3.12; 1.9.1 Requires-Python >=3.8,<3.12; 8.0.10 Requires-Python >=3.7,<=3.11; 8.0.11 Requires-Python >=3.7,<=3.11; 8.0.12 Requires-Python >=3.7,<=3.11; 8.0.13 Requires-Python >=3.7,<=3.11; 8.0.14 Requires-Python >=3.7,<=3.11; 8.0.15 Requires-Python >=3.7,<=3.11; 8.0.16 Requires-Python >=3.7,<=3.11; 8.0.17 Requires-Python >=3.7,<=3.11; 8.0.18 Requires-Python >=3.7,<=3.11; 8.0.19 Requires-Python >=3.7,<=3.11; 8.0.20 Requires-Python >=3.7,<=3.11; 8.0.21 Requires-Python >=3.7,<=3.11; 8.0.22 Requires-Python >=3.7,<=3.11; 8.0.23 Requires-Python >=3.7,<=3.11; 8.0.24 Requires-Python >=3.7,<=3.11; 8.0.25 Requires-Python >=3.7,<=3.11; 8.0.26 Requires-Python >=3.7,<=3.11; 8.0.27 Requires-Python >=3.7,<=3.11; 8.0.28 Requires-Python >=3.7,<=3.11; 8.0.29 Requires-Python >=3.7,<=3.11; 8.0.30 Requires-Python >=3.7,<=3.11; 8.0.31 Requires-Python >=3.7,<=3.11; 8.0.32 Requires-Python >=3.7,<=3.11; 8.0.33 Requires-Python >=3.7,<=3.11; 8.0.34 Requires-Python >=3.7,<=3.11; 8.0.7 Requires-Python >=3.7,<=3.11; 8.0.8 Requires-Python >=3.7,<=3.11; 8.0.9 Requires-Python >=3.7,<=3.11
+ERROR: Could not find a version that satisfies the requirement torch>=2.0.0 (from diveanalyzer) (from versions: none)
+ERROR: No matching distribution found for torch>=2.0.0
+Collecting playwright
+  Using cached playwright-1.57.0-py3-none-macosx_11_0_universal2.whl.metadata (3.5 kB)
+Collecting pyee<14,>=13 (from playwright)
+  Using cached pyee-13.0.0-py3-none-any.whl.metadata (2.9 kB)
+Collecting greenlet<4.0.0,>=3.1.1 (from playwright)
+  Using cached greenlet-3.3.0-cp314-cp314-macosx_11_0_universal2.whl.metadata (4.1 kB)
+Collecting typing-extensions (from pyee<14,>=13->playwright)
+  Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Using cached playwright-1.57.0-py3-none-macosx_11_0_universal2.whl (42.0 MB)
+Using cached greenlet-3.3.0-cp314-cp314-macosx_11_0_universal2.whl (275 kB)
+Using cached pyee-13.0.0-py3-none-any.whl (15 kB)
+Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Installing collected packages: typing-extensions, greenlet, pyee, playwright
+
+Successfully installed greenlet-3.3.0 playwright-1.57.0 pyee-13.0.0 typing-extensions-4.15.0
+/Users/mcauchy/workflow/DiveAnalizer/venv/bin/python: No module named playwright
+🎬 DiveAnalyzer v2.0.0
+📹 Input: /Users/mcauchy/workflow/DiveAnalizer/IMG_6447.MOV
+📁 Output: dives
+
+⏱️  Video duration: 0:00:15
+
+🔍 Analyzing system capabilities...
+   System Score: 5/10
+   CPU: 4-core @ 1.4 GHz
+   RAM: 8.0 GB
+   GPU: NONE
+
+   ✓ Auto-selected Phase 2
+   Estimated time: ~15s
+   Expected confidence: 92%
+
+
+🔊 Extracting audio track...
+✓ Audio extracted
+
+🌊 Detecting splashes (threshold -25dB)...
+✓ Found 2 splash peaks
+
+🎬 Phase 2: Motion-Based Validation...
+  Detecting motion bursts...
+  ✓ Found 3 motion bursts
+
+🔗 Fusing detection signals...
+✓ Created 2 dive events (audio + motion)
+  └─ Motion validated: 1/2
+✓ Final dive count: 2
+
+✂️  Extracting 2 dive clips...
+✓ Successfully extracted 2/2 clips
+
+📊 Summary:
+  Total dives: 2
+  Extracted: 2
+  Output folder: dives
+  ✓ dive_001.mp4 (21.4MB)
+  ✓ dive_002.mp4 (35.9MB)
+
+📸 Creating review gallery...
+✅ Gallery saved to: dives/review_gallery.html
+✓ Gallery created: dives/review_gallery.html
+
+🌐 Starting HTTP server for live review...
+✓ Server running at http://localhost:8765
+  Events: http://localhost:8765/events
+🌐 Opening browser at http://localhost:8765
+
+🖼️  Generating thumbnails in background...
+✓ Background thumbnail generation started
+
+🖼️  Waiting for thumbnail generation to complete...
+   Server running at http://localhost:8765 - Keep browser open
+[FEAT-07] Generated 8/8 frames for dive 1 (0.0s elapsed)
+[FEAT-07] Generated 8/8 frames for dive 2 (4.1s elapsed)
+[FEAT-07] Thumbnail generation complete: 2/2 in 9.1s
+✓ Thumbnail generation complete
+
+🌐 Server is running for live review until you shut it down.
+  • To stop the server: visit http://localhost:8765/shutdown in your browser or click 'Accept All & Close' in the gallery.
+  • Or stop the process with Ctrl+C in this terminal.
+
+✅ Done!

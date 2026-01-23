@@ -1,0 +1,3 @@
+2026-01-23 11:57:50,870 - diveanalyzer.server.sse_server - INFO - Server started on http://localhost:8765
+2026-01-23 11:59:46,449 - diveanalyzer.server.sse_server - INFO - SSE client connected from 127.0.0.1:60766
+server-only-started

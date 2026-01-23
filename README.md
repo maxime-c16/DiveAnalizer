@@ -1,454 +1,173 @@
-# DiveAnalyzer 🏊‍♂️
+# DiveAnalyzer
 
-**Automated diving video analysis tool for swimming pool diving videos using computer vision and AI.**
+**Automated diving video analysis using multi-modal AI detection (audio, motion, person detection).**
 
-DiveAnalyzer automatically detects and extracts individual dives from swimming pool diving videos, providing clean, professional-quality clips with preserved audio and optional pose visualization overlay.
+DiveAnalyzer detects and extracts individual dives from swimming pool videos using a fusion of:
+- 🔊 Audio peak detection (librosa)
+- 🎬 Motion burst detection (frame differencing)
+- 👤 YOLO person detection
+- ⚡ FFmpeg stream-copy extraction (instant clips with audio)
 
-## 🚀 Features
+## Quick Start
 
-### Core Functionality
-- **🔍 Automatic Dive Detection**: Advanced computer vision algorithms detect takeoff and water entry points
-- **🎬 Real-time Extraction**: Background processing for maximum efficiency
-- **🔊 Audio Preservation**: FFmpeg integration maintains original audio quality
-- **🎯 Pose Analysis**: Optional MediaPipe pose detection and visualization
-- **⚡ Performance Optimized**: Multi-threaded processing with 4.46x speedup over sequential processing
-- **📊 Comprehensive Metrics**: Detailed performance analytics and timing information
-
-### Video Processing
-- **📹 Multiple Formats**: Supports MP4, AVI, MOV, and other common video formats
-- **🎨 Customizable Output**: Optional pose overlay, audio preservation controls
-- **📏 Flexible Resolution**: Works with various video resolutions and aspect ratios
-- **⏱️ Frame-accurate**: Precise frame-level dive detection and extraction
-
-### Advanced Analytics
-- **🏊 Dive Statistics**: Duration, confidence levels, and detailed metrics
-- **📈 Performance Tracking**: Processing speed, extraction times, and efficiency metrics
-- **💾 Intelligent Caching**: Performance data caching for improved subsequent runs
-- **🎯 Zone-based Detection**: Customizable detection zones for optimal accuracy
-
-## 📋 Requirements
-
-### System Requirements
-- **Operating System**: macOS, Linux, or Windows
-- **Python**: 3.8 or higher
-- **Memory**: 4GB RAM minimum, 8GB recommended
-- **Storage**: 1GB free space for dependencies and cache
-
-### Dependencies
-- **OpenCV**: Computer vision processing
-- **MediaPipe**: Pose detection and analysis
-- **NumPy**: Numerical computations
-- **FFmpeg**: Audio processing (optional, for audio preservation)
-
-## 🛠️ Installation
-
-### 1. Clone the Repository
 ```bash
-git clone https://github.com/maxime-c16/DiveAnalizer.git
-cd DiveAnalizer
-```
-
-### 2. Set Up Python Environment
-```bash
-# Create virtual environment (recommended)
-python3 -m venv dive_env
-source dive_env/bin/activate  # On Windows: dive_env\Scripts\activate
-
-# Install dependencies
+# Install
 pip install -r requirements.txt
+
+# Run
+python -m diveanalyzer process video.mp4
+
+# With live gallery review
+python -m diveanalyzer process video.mp4 --enable-server --server-port 8765
 ```
 
-### 3. Install FFmpeg (Optional, for Audio Preservation)
-**macOS (using Homebrew):**
+See [START_HERE.md](START_HERE.md) for detailed setup instructions.
+
+## Features
+
+- **Multi-modal Detection**: Audio + motion + person detection fusion for robust dive detection
+- **Real-time Extraction**: Instant dive clip generation using FFmpeg stream copy
+- **Live Gallery Review**: Interactive web interface for reviewing and accepting dives
+- **Audio Preservation**: Original audio maintained in all extracted clips
+- **Performance Optimized**: Multi-GPU support, FP16 quantization, frame batching
+- **Comprehensive Analytics**: Detailed metrics and processing statistics
+
+## Documentation
+
+- **[START_HERE.md](START_HERE.md)** - Quick start guide for first-time users
+- **[ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md)** - v2.0 system design and modules
+- **[docs/](docs/)** - Additional documentation and guides
+- **[CLAUDE.md](CLAUDE.md)** - Development guidelines for Claude AI
+
+## System Requirements
+
+- Python 3.8+
+- 4GB RAM minimum (8GB recommended)
+- 1GB free disk space
+- FFmpeg installed (for audio/video processing)
+
+### Installation by Platform
+
+**macOS:**
 ```bash
 brew install ffmpeg
+pip install -r requirements.txt
 ```
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt update
 sudo apt install ffmpeg
+pip install -r requirements.txt
 ```
 
 **Windows:**
-Download from [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html) and add to PATH.
-
-### 4. Verify Installation
+Download FFmpeg from [ffmpeg.org](https://ffmpeg.org/download.html), add to PATH, then:
 ```bash
-python3 slAIcer.py --help
+pip install -r requirements.txt
 ```
 
-## 🎯 Quick Start
+## Usage
 
-### Basic Usage
+### Basic Processing
 ```bash
-# Extract dives with default settings (clean videos + audio)
-python3 slAIcer.py path/to/your/video.mp4
+# Extract all dives
+python -m diveanalyzer process video.mp4
 
-# Extract to specific directory
-python3 slAIcer.py video.mp4 --output_dir extracted_dives
+# Specify output directory
+python -m diveanalyzer process video.mp4 --output dives/
 
-# Enable pose overlay
-python3 slAIcer.py video.mp4 --show-pose-overlay
-
-# Disable audio preservation
-python3 slAIcer.py video.mp4 --no-audio
+# Enable live gallery review
+python -m diveanalyzer process video.mp4 --enable-server
 ```
 
 ### Advanced Options
 ```bash
-# Debug mode with visual feedback
-python3 slAIcer.py video.mp4 --debug
+# Multi-GPU processing
+python -m diveanalyzer process video.mp4 --gpus 0 1
 
-# Different splash detection method
-python3 slAIcer.py video.mp4 --splash_method optical_flow
+# FP16 quantization (faster, lower memory)
+python -m diveanalyzer process video.mp4 --fp16
 
-# Disable threading (for debugging)
-python3 slAIcer.py video.mp4 --no-threading
+# Batch frames for better GPU utilization
+python -m diveanalyzer process video.mp4 --batch-size 8
+
+# Debug mode with visualization
+python -m diveanalyzer process video.mp4 --debug
 ```
 
-## 📐 Zone Configuration Guide
+See `python -m diveanalyzer --help` for complete options.
 
-### Understanding Detection Zones
+## Architecture
 
-DiveAnalyzer uses three critical zones for optimal detection accuracy:
-
-#### 1. **Diving Board Line** 🏗️
-- **Purpose**: Establishes the diving platform reference point
-- **Selection**: Click on the diving board edge or platform line
-- **Tips**:
-  - Choose a clear, horizontal line on the diving board
-  - Avoid shadows or reflections
-  - Use the auto-detect feature ('a' key) for automatic detection
-
-#### 2. **Diver Detection Zone** 👤
-- **Purpose**: Focuses pose detection on the relevant area
-- **Selection**: Click and drag to create a rectangle covering the diving area
-- **Best Practices**:
-  - Include the entire diving board/platform area
-  - Extend vertically to capture full diver height during approach
-  - Include some margin around the expected diver positions
-  - Avoid including spectators or background distractions
-
-#### 3. **Splash Detection Zone** 💦
-- **Purpose**: Monitors water surface for entry splash detection
-- **Selection**: Click and drag to define the water surface monitoring area
-- **Optimization Tips**:
-  - Focus on the water surface where splashes occur
-  - Include 20-30cm above and below the waterline
-  - Avoid pool edges, lane markers, or lighting reflections
-  - Consider water depth and typical dive entry points
-
-### Zone Selection Best Practices
-
-#### Video Quality Considerations
-- **Lighting**: Ensure consistent lighting across detection zones
-- **Camera Angle**: Side-view angles work best for dive detection
-- **Stability**: Use tripod-mounted cameras for consistent zone boundaries
-- **Resolution**: Higher resolution videos provide more accurate zone detection
-
-#### Common Setup Mistakes to Avoid
-- ❌ **Too Narrow Diver Zone**: May miss parts of the diving motion
-- ❌ **Splash Zone Too High**: May not capture water entry effectively
-- ❌ **Including Background Motion**: Trees, people, or vehicles in zones
-- ❌ **Poor Lighting Conditions**: Shadows or glare affecting detection
-
-#### Optimal Zone Configuration
-```
-┌─────────────────────────────────────┐
-│                 SKY                 │
-├─────────────────────────────────────┤
-│   🏗️ DIVING BOARD LINE             │
-│   👤 DIVER DETECTION ZONE          │
-│     ┌─────────────────┐             │
-│     │   Diving Area   │             │
-│     │                 │             │
-│     └─────────────────┘             │
-├─────────────────────────────────────┤
-│  💦 SPLASH DETECTION ZONE          │
-│  ══════════════════════════════════ │ ← Water Surface
-│                                     │
-│            POOL WATER               │
-└─────────────────────────────────────┘
-```
-
-## 🎬 Supported Video Types
-
-### Recommended Formats
-- **MP4** (H.264): Best compatibility and performance
-- **MOV**: Good for high-quality recordings
-- **AVI**: Widely supported format
-
-### Video Specifications
-- **Resolution**: 720p minimum, 1080p or 4K recommended
-- **Frame Rate**: 30fps minimum, 60fps for detailed analysis
-- **Duration**: No specific limits, but longer videos require more processing time
-- **Codec**: H.264/H.265 for best compatibility
-
-### Recording Guidelines
-- **Camera Position**: Side view of the diving area
-- **Stability**: Use tripod or stable mounting
-- **Lighting**: Consistent, bright lighting without harsh shadows
-- **Background**: Minimal background motion or distractions
-- **Audio**: Include audio for complete dive analysis experience
-
-## ⚙️ Configuration Options
-
-### Command Line Arguments
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `video_path` | Required | Path to input video file |
-| `--output_dir` | `data/pose_analysis/extracted_dives` | Output directory for extracted dives |
-| `--splash_method` | `motion_intensity` | Splash detection algorithm |
-| `--show-pose-overlay` | `False` | Enable pose visualization overlay |
-| `--no-audio` | `False` | Disable audio preservation |
-| `--debug` | `False` | Enable debug visualization |
-| `--no-threading` | `False` | Disable multi-threaded processing |
-
-### Splash Detection Methods
-
-#### 1. **Motion Intensity** (Recommended)
-- **Description**: Analyzes motion magnitude in splash zone
-- **Best For**: General-purpose dive detection
-- **Advantages**: Robust, fast, works in various lighting
-- **Usage**: `--splash_method motion_intensity`
-
-#### 2. **Optical Flow**
-- **Description**: Tracks pixel movement patterns
-- **Best For**: High-resolution videos with clear water surface
-- **Advantages**: Very precise, good for detailed analysis
-- **Usage**: `--splash_method optical_flow`
-
-#### 3. **Frame Difference**
-- **Description**: Compares consecutive frames for changes
-- **Best For**: Stable camera setups with minimal background motion
-- **Advantages**: Simple, computationally efficient
-- **Usage**: `--splash_method frame_diff`
-
-#### 4. **Contour Analysis**
-- **Description**: Detects shape changes in water surface
-- **Best For**: High-contrast water surface scenarios
-- **Advantages**: Good for clear water entry detection
-- **Usage**: `--splash_method contour`
-
-#### 5. **Combined Method**
-- **Description**: Uses multiple methods with voting system
-- **Best For**: Challenging videos or maximum accuracy
-- **Advantages**: Most robust, reduces false positives
-- **Usage**: `--splash_method combined`
-
-## 📊 Performance & Analytics
-
-### Processing Performance
-- **Real-time Processing**: 0.89x to 1.2x real-time speed
-- **Multi-threading**: 4.46x speedup over sequential processing
-- **Memory Usage**: Optimized for efficient memory utilization
-- **Caching**: Intelligent performance caching for repeated runs
-
-### Output Metrics
-After processing, DiveAnalyzer provides comprehensive analytics:
+The v2.0 system uses modular signal fusion:
 
 ```
-📊 DIVE ANALYSIS METRICS
-🎥 Video Information:
-    📁 File: dive_video.mp4
-    📏 Resolution: 1920x1080
-    🎬 FPS: 30.0
-    ⏱️  Duration: 45.2s (1356 frames)
-
-⚡ Processing Performance:
-    🔍 Detection Time: 12.34s
-    💾 Extraction Time: 3.21s
-    ⚡ Realtime Ratio: 1.15x
-
-🏊 Dive Statistics:
-    📊 Total Dives Found: 5
-    ⏱️  Average Duration: 3.2s
-    🏆 Longest Dive: #3 (4.1s)
-    ⚡ Shortest Dive: #1 (2.8s)
+Video Input
+    ↓
+┌───────────────────────────────────┐
+│ Detection Algorithms              │
+├─────────────────────────────────┤
+│ • Audio peak detection (librosa)  │
+│ • Motion burst detection          │
+│ • YOLO person detection           │
+└───────────────────────────────────┘
+    ↓
+┌───────────────────────────────────┐
+│ Signal Fusion                     │
+│ (Multi-modal consensus)           │
+└───────────────────────────────────┘
+    ↓
+┌───────────────────────────────────┐
+│ Extraction (FFmpeg)               │
+│ (Stream copy for instant output)  │
+└───────────────────────────────────┘
+    ↓
+Extracted Dives + Gallery
 ```
 
-### File Output Structure
-```
-output_directory/
-├── dive_1.mp4              # First detected dive
-├── dive_2.mp4              # Second detected dive
-├── dive_3_low_conf.mp4     # Low confidence detection
-└── ...
-```
+See [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) for technical details.
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
-### Common Issues
+| Problem | Solution |
+|---------|----------|
+| **No dives detected** | Check audio quality, try `--debug` for visualization |
+| **Missing audio in output** | Verify FFmpeg installed, check source has audio |
+| **Slow processing** | Enable `--fp16` and `--batch-size`, use `--gpus` if available |
+| **Server won't start** | Check port availability, try different `--server-port` |
 
-#### 1. **No Dives Detected**
-**Possible Causes:**
-- Detection zones poorly configured
-- Insufficient lighting or contrast
-- Camera angle not optimal
+## Testing
 
-**Solutions:**
-- Reconfigure detection zones more carefully
-- Try different splash detection methods
-- Use `--debug` mode for visual feedback
-- Ensure side-view camera angle
-
-#### 2. **Audio Missing in Output**
-**Possible Causes:**
-- FFmpeg not installed
-- Audio disabled with `--no-audio`
-- Source video has no audio track
-
-**Solutions:**
-- Install FFmpeg (see installation section)
-- Remove `--no-audio` flag
-- Verify source video has audio
-
-#### 3. **Poor Performance**
-**Possible Causes:**
-- Large video files
-- High-resolution processing
-- Insufficient system resources
-
-**Solutions:**
-- Use `--no-threading` to debug threading issues
-- Process shorter video segments
-- Reduce video resolution before processing
-- Close unnecessary applications
-
-#### 4. **Inaccurate Dive Detection**
-**Possible Causes:**
-- Incorrect zone configuration
-- Background motion interference
-- Suboptimal splash detection method
-
-**Solutions:**
-- Reconfigure detection zones
-- Try different `--splash_method` options
-- Use `--debug` mode to analyze detection process
-- Ensure stable camera setup
-
-### Debug Mode
-
-Enable debug mode for detailed analysis:
 ```bash
-python3 slAIcer.py video.mp4 --debug
+# Run test suite
+python -m pytest tests/
+
+# Run specific test
+python -m pytest tests/test_audio_detection.py
+
+# Integration tests
+python scripts/run_fixture_tests.py
 ```
 
-Debug mode provides:
-- Real-time visualization of detection zones
-- Frame-by-frame processing feedback
-- Pose detection overlay
-- Splash detection indicators
-- State transition visualization
+## Performance
 
-## 🎯 Advanced Usage
+- **Detection**: 1-2x real-time on CPU, 5-10x on GPU
+- **Extraction**: Near-instant (stream copy via FFmpeg)
+- **Memory**: ~2GB per GPU with FP16, ~4GB with full precision
 
-### Batch Processing
-For processing multiple videos:
-```bash
-# Process all videos in a directory
-for video in *.mp4; do
-    python3 slAIcer.py "$video" --output_dir "processed/${video%.*}"
-done
-```
+## Contributing
 
-### Custom Output Organization
-```bash
-# Organize by date and video name
-python3 slAIcer.py video.mp4 --output_dir "dives/$(date +%Y-%m-%d)/$(basename video.mp4 .mp4)"
-```
+See [docs/MANUAL_TESTING_GUIDE.md](docs/MANUAL_TESTING_GUIDE.md) for development guidelines.
 
-### Performance Benchmarking
-Use the included benchmark tool:
-```bash
-python3 threading_benchmark.py video.mp4 --frames 500
-```
+## License
 
-## 📚 API Reference
+MIT License - See LICENSE file for details
 
-### Core Functions
+## Support
 
-#### `detect_and_extract_dives_realtime()`
-Main processing function with real-time extraction.
-
-**Parameters:**
-- `video_path`: Path to input video
-- `board_y_norm`: Normalized diving board Y position
-- `water_y_norm`: Normalized water surface Y position
-- `splash_zone_top_norm`: Top of splash detection zone
-- `splash_zone_bottom_norm`: Bottom of splash detection zone
-- `diver_zone_norm`: Diver detection zone coordinates
-- `debug`: Enable debug visualization
-- `splash_method`: Splash detection algorithm
-- `use_threading`: Enable multi-threaded processing
-- `output_dir`: Output directory for extracted videos
-- `show_pose_overlay`: Enable pose visualization
-- `preserve_audio`: Enable audio preservation
-
-**Returns:**
-Dictionary containing detected dives and comprehensive metrics.
-
-#### `extract_and_save_dive()`
-Extracts and saves individual dive videos.
-
-**Parameters:**
-- `video_path`: Source video path
-- `dive_number`: Sequential dive number
-- `start_idx`: Start frame index
-- `end_idx`: End frame index
-- `confidence`: Detection confidence level
-- `output_dir`: Output directory
-- `diver_zone_norm`: Diver detection zone (optional)
-- `video_fps`: Video frame rate (optional)
-- `show_pose_overlay`: Enable pose overlay (default: False)
-- `preserve_audio`: Enable audio preservation (default: True)
-
-## 🤝 Contributing
-
-We welcome contributions to improve DiveAnalyzer! Please see our contributing guidelines:
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes**: Follow coding standards and add tests
-4. **Run quality checks**: `ruff check slAIcer.py`
-5. **Commit changes**: Use descriptive commit messages
-6. **Push to branch**: `git push origin feature/amazing-feature`
-7. **Open a Pull Request**: Describe your changes and their benefits
-
-### Development Setup
-```bash
-# Install development dependencies
-pip install -r requirements.txt
-pip install ruff black pytest
-
-# Run code quality checks
-ruff check slAIcer.py
-black slAIcer.py
-
-# Run tests
-python3 -m pytest tests/
-```
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **OpenCV**: Computer vision foundation
-- **MediaPipe**: Advanced pose detection capabilities
-- **FFmpeg**: Professional audio/video processing
-- **NumPy**: Efficient numerical computations
-- **Python Community**: Excellent ecosystem and libraries
-
-## 📞 Support
-
-- **Issues**: Report bugs and request features on [GitHub Issues](https://github.com/maxime-c16/DiveAnalizer/issues)
-- **Discussions**: Join the conversation in [GitHub Discussions](https://github.com/maxime-c16/DiveAnalizer/discussions)
+- **Issues**: [GitHub Issues](https://github.com/maxime-c16/DiveAnalizer/issues)
 - **Email**: [macauchy@student.42.fr](mailto:macauchy@student.42.fr)
 
 ---
 
-**DiveAnalyzer** - Transforming diving video analysis with AI-powered precision. 🏊‍♂️🚀
+**DiveAnalyzer** - AI-powered diving video analysis at scale.

@@ -1,0 +1,66 @@
+🎬 DiveAnalyzer v2.0.0
+📹 Input: /Users/mcauchy/workflow/DiveAnalizer/IMG_6447.MOV
+📁 Output: dives
+
+⏱️  Video duration: 0:00:15
+
+🔍 Analyzing system capabilities...
+   System Score: 5/10
+   CPU: 4-core @ 1.4 GHz
+   RAM: 8.0 GB
+   GPU: NONE
+
+   ✓ Auto-selected Phase 2
+   Estimated time: ~15s
+   Expected confidence: 92%
+
+
+🔊 Extracting audio track...
+✓ Audio extracted
+
+🌊 Detecting splashes (threshold -25dB)...
+✓ Found 2 splash peaks
+
+🎬 Phase 2: Motion-Based Validation...
+  Detecting motion bursts...
+  ✓ Found 3 motion bursts
+
+🔗 Fusing detection signals...
+✓ Created 2 dive events (audio + motion)
+  └─ Motion validated: 1/2
+✓ Final dive count: 2
+
+✂️  Extracting 2 dive clips...
+✓ Successfully extracted 2/2 clips
+
+📊 Summary:
+  Total dives: 2
+  Extracted: 2
+  Output folder: dives
+  ✓ dive_001.mp4 (21.4MB)
+  ✓ dive_002.mp4 (35.9MB)
+
+📸 Creating review gallery...
+✅ Gallery saved to: dives/review_gallery.html
+✓ Gallery created: dives/review_gallery.html
+
+🌐 Starting HTTP server for live review...
+✓ Server running at http://localhost:8765
+  Events: http://localhost:8765/events
+🌐 Opening browser at http://localhost:8765
+
+🖼️  Generating thumbnails in background...
+✓ Background thumbnail generation started
+
+🖼️  Waiting for thumbnail generation to complete...
+   Server running at http://localhost:8765 - Keep browser open
+[FEAT-07] Generated 8/8 frames for dive 1 (0.0s elapsed)
+[FEAT-07] Generated 8/8 frames for dive 2 (4.8s elapsed)
+[FEAT-07] Thumbnail generation complete: 2/2 in 8.7s
+✓ Thumbnail generation complete
+
+🌐 Server is running for live review until you shut it down.
+  • To stop the server: visit http://localhost:8765/shutdown in your browser or click 'Accept All & Close' in the gallery.
+  • Or stop the process with Ctrl+C in this terminal.
+
+✅ Done!

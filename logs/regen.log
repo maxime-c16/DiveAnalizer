@@ -1,0 +1,4 @@
+  File "/Users/mcauchy/workflow/DiveAnalizer/diveanalyzer/utils/review_gallery.py", line 130
+    })
+    ^
+SyntaxError: closing parenthesis '}' does not match opening parenthesis '(' on line 123
