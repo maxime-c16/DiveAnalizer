@@ -1759,12 +1759,16 @@ class DiveGalleryGenerator:
             }}
 
             _detectServerUrl() {{
-                // Try to detect server URL from current location
-                // Default: http://localhost:8765
-                if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {{
-                    // If running on a different host, use that host
-                    return `http://${{window.location.hostname}}:8765`;
+                // Auto-detect server URL from current page location
+                // This works for any host and port (not just localhost:8765)
+                if (typeof window !== 'undefined' && window.location) {{
+                    // Use same protocol, hostname, and port as the current page
+                    const protocol = window.location.protocol;  // http: or https:
+                    const hostname = window.location.hostname;  // localhost, 127.0.0.1, etc.
+                    const port = window.location.port;          // 8765, 8766, 8769, etc.
+                    return `${{protocol}}//${{hostname}}:${{port}}`;
                 }}
+                // Fallback if window.location not available
                 return 'http://localhost:8765';
             }}
 
@@ -2282,10 +2286,18 @@ class DiveGalleryGenerator:
         let statusDashboard = null;
 
         function initializeEventConsumer() {{
-            // Detect server URL
-            const serverUrl = window.location.hostname === 'file:'
-                ? 'http://localhost:8765'
-                : `http://${{window.location.hostname}}:8765`;
+            // Auto-detect server URL from current page location
+            // Works with any host and port (not hardcoded to 8765)
+            const serverUrl = (() => {{
+                if (window.location.hostname === 'file:') {{
+                    return 'http://localhost:8765';  // Fallback for file:// protocol
+                }}
+                // Use actual server port - the page is served from this server
+                const protocol = window.location.protocol;  // http: or https:
+                const hostname = window.location.hostname;  // 127.0.0.1, localhost, etc.
+                const port = window.location.port;          // 8765, 8766, 8769, etc.
+                return `${{protocol}}//${{hostname}}:${{port}}`;
+            }})();
 
             // FEAT-05: Initialize status dashboard
             statusDashboard = new StatusDashboard();
