@@ -31,8 +31,8 @@ def generate_thumbnail_frame(
     timestamp: float,
     output_path: Optional[str] = None,
     width: int = 320,
-    height: int = 180,
-    quality: int = 85,
+    height: int = 240,
+    quality: int = 5,
     as_base64: bool = False,
 ) -> str:
     """
@@ -44,7 +44,7 @@ def generate_thumbnail_frame(
         output_path: Where to save JPEG (if None, temp file)
         width: Thumbnail width in pixels
         height: Thumbnail height in pixels
-        quality: JPEG quality 1-100
+        quality: FFmpeg -q:v value (1-31, lower = better quality but slower)
         as_base64: Return base64 encoded string instead of file path
 
     Returns:
@@ -79,7 +79,7 @@ def generate_thumbnail_frame(
         '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos',  # Resize with quality
         '-c:v', 'mjpeg',  # Explicitly use MJPEG encoder
         '-pix_fmt', 'yuvj420p',  # Use MJPEG-compatible YUV format
-        '-q:v', str(100 - quality),  # Quality (FFmpeg uses inverted scale)
+        '-q:v', str(quality),  # Quality (lower = better quality)
         '-sws_flags', 'lanczos',  # Use Lanczos scaling
         output_path
     ]
@@ -259,8 +259,8 @@ def generate_timeline_thumbnails(
     start_time: float,
     end_time: float,
     num_frames: int = 8,
-    width: int = 160,
-    height: int = 90,
+    width: int = 640,
+    height: int = 360,
     as_base64: bool = True,
 ) -> List[str]:
     """
@@ -271,8 +271,8 @@ def generate_timeline_thumbnails(
         start_time: Dive start time in seconds
         end_time: Dive end time in seconds
         num_frames: Number of frames to extract (default 8 = 2x4 grid)
-        width: Thumbnail width in pixels
-        height: Thumbnail height in pixels
+        width: Thumbnail width in pixels (default 640)
+        height: Thumbnail height in pixels (default 360)
         as_base64: Return base64 encoded strings
 
     Returns:
@@ -297,7 +297,7 @@ def generate_timeline_thumbnails(
                 timestamp,
                 width=width,
                 height=height,
-                quality=70,  # Lower quality for timeline
+                quality=3,  # High quality for timeline
                 as_base64=as_base64,
             )
             thumbnails.append(thumb)
