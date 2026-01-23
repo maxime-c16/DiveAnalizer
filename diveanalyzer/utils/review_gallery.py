@@ -1416,11 +1416,11 @@ class DiveGalleryGenerator:
                     <span class="stat-value" id="total-dives">{len(self.dives)}</span>
                 </div>
                 <div class="stat">
-                    <span>Selected for Delete:</span>
-                    <span class="stat-value" id="selected-count">0</span>
+                    <span>SELECTION_STAT_LABEL:</span>
+                    <span class="stat-value" id="selected-count">SELECTION_STAT_VALUE</span>
                 </div>
-                <div class="stat">
-                    <span>To Keep:</span>
+                <div class="stat" id="keep-stat" KEEP_STAT_STYLE>
+                    <span>KEEP_STAT_LABEL:</span>
                     <span class="stat-value" id="keep-count">{len(self.dives)}</span>
                 </div>
             </div>
@@ -1602,6 +1602,7 @@ class DiveGalleryGenerator:
     <script>
         let currentDiveIndex = 0;
         let cards = [];
+        const SELECTION_MODE = SELECTION_MODE_VALUE;
 
         // ===== FEAT-05: Status Dashboard Management =====
         class StatusDashboard {{
@@ -2418,9 +2419,25 @@ class DiveGalleryGenerator:
             // Add button event listeners
             document.getElementById('btn-select-all').addEventListener('click', selectAll);
             document.getElementById('btn-deselect-all').addEventListener('click', deselectAll);
-            document.getElementById('btn-watch').addEventListener('click', watchSelected);
-            document.getElementById('btn-delete').addEventListener('click', deleteSelected);
-            document.getElementById('btn-accept').addEventListener('click', acceptAll);
+
+            // Mode-specific button handlers
+            const extractBtn = document.getElementById('btn-extract-selected');
+            const watchBtn = document.getElementById('btn-watch');
+            const deleteBtn = document.getElementById('btn-delete');
+            const acceptBtn = document.getElementById('btn-accept');
+
+            if (extractBtn) {{
+                extractBtn.addEventListener('click', extractSelected);
+            }}
+            if (watchBtn) {{
+                watchBtn.addEventListener('click', watchSelected);
+            }}
+            if (deleteBtn) {{
+                deleteBtn.addEventListener('click', deleteSelected);
+            }}
+            if (acceptBtn) {{
+                acceptBtn.addEventListener('click', acceptAll);
+            }}
 
             // Initialize modal handlers
             initModalHandlers();
@@ -2549,18 +2566,41 @@ class DiveGalleryGenerator:
         function updateStats() {{
             const checked = document.querySelectorAll('.dive-checkbox:checked').length;
             const total = cards.length;
-            document.getElementById('selected-count').textContent = checked;
-            document.getElementById('keep-count').textContent = total - checked;
 
-            // Update card styles
-            cards.forEach(card => {{
-                const checkbox = card.querySelector('.dive-checkbox');
-                if (checkbox.checked) {{
-                    card.classList.add('deleted');
-                }} else {{
-                    card.classList.remove('deleted');
+            if (SELECTION_MODE) {{
+                // Selection mode: checked = selected for extraction
+                document.getElementById('selected-count').textContent = `${{checked}}/${{total}}`;
+                const keepCountEl = document.getElementById('keep-count');
+                if (keepCountEl) {{
+                    keepCountEl.textContent = '';
                 }}
-            }});
+
+                // Update card styles - selected cards highlighted
+                cards.forEach(card => {{
+                    const checkbox = card.querySelector('.dive-checkbox');
+                    if (checkbox.checked) {{
+                        card.classList.add('selected');
+                        card.classList.remove('deleted');
+                    }} else {{
+                        card.classList.remove('selected');
+                        card.classList.add('deleted');
+                    }}
+                }});
+            }} else {{
+                // Extracted mode: checked = selected for deletion
+                document.getElementById('selected-count').textContent = checked;
+                document.getElementById('keep-count').textContent = total - checked;
+
+                // Update card styles
+                cards.forEach(card => {{
+                    const checkbox = card.querySelector('.dive-checkbox');
+                    if (checkbox.checked) {{
+                        card.classList.add('deleted');
+                    }} else {{
+                        card.classList.remove('deleted');
+                    }}
+                }});
+            }}
         }}
 
         function selectAll() {{
@@ -2568,7 +2608,11 @@ class DiveGalleryGenerator:
                 cb.checked = true;
             }});
             updateStats();
-            showMessage('✅ All dives selected for deletion', 'success');
+            if (SELECTION_MODE) {{
+                showMessage('✅ All dives selected for extraction', 'success');
+            }} else {{
+                showMessage('✅ All dives selected for deletion', 'success');
+            }}
         }}
 
         function deselectAll() {{
@@ -2642,6 +2686,58 @@ class DiveGalleryGenerator:
             }} else {{
                 // No server: cannot delete files when opened via file://
                 showMessage('⚠️ Cannot delete files without server. Run with --enable-server.', 'error');
+            }}
+        }}
+
+        function extractSelected() {{
+            const selected = document.querySelectorAll('.dive-checkbox:checked');
+            if (selected.length === 0) {{
+                showMessage('❌ No dives selected for extraction', 'error');
+                return;
+            }}
+
+            // Collect selected dive IDs and timing info
+            const selectedDives = [];
+            selected.forEach(checkbox => {{
+                const card = checkbox.closest('.dive-card');
+                const diveId = parseInt(card.dataset.id);
+                selectedDives.push({{
+                    dive_id: diveId,
+                    start_time: parseFloat(card.dataset.start),
+                    end_time: parseFloat(card.dataset.end),
+                    splash_time: parseFloat(card.dataset.splash),
+                    confidence: parseFloat(card.dataset.confidence)
+                }});
+            }});
+
+            console.log('Extract selected dives:', selectedDives);
+
+            // Send POST request to server
+            if (window.SERVER_URL) {{
+                showMessage(`🎬 Extracting ${{selectedDives.length}} dive(s)...`, 'info');
+                fetch(`${{window.SERVER_URL}}/extract_selected`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ dives: selectedDives }})
+                }})
+                .then(res => res.json())
+                .then(data => {{
+                    if (data.status === 'success') {{
+                        showMessage(`✅ Successfully extracted ${{selectedDives.length}} dive(s)!`, 'success');
+                        // Optionally redirect or update UI
+                        setTimeout(() => {{
+                            window.location.reload();
+                        }}, 2000);
+                    }} else {{
+                        showMessage(`❌ Extraction failed: ${{data.message || 'Unknown error'}}`, 'error');
+                    }}
+                }})
+                .catch(err => {{
+                    console.error('Extract request failed:', err);
+                    showMessage('❌ Extract request failed (server error)', 'error');
+                }});
+            }} else {{
+                showMessage('❌ Server not available. Cannot extract dives.', 'error');
             }}
         }}
 
@@ -3036,6 +3132,27 @@ MODAL VIEW (open by double-clicking a dive):
 </body>
 </html>
 """
+
+        # Replace mode-specific placeholders
+        if self.selection_mode:
+            dives_count = len(self.dives_metadata)
+            html = html.replace('SELECTION_MODE_VALUE', 'true')
+            html = html.replace('SELECTION_MODE_TEXT', 'Select dives to extract')
+            html = html.replace('SELECTION_STAT_LABEL', 'Selected')
+            html = html.replace('SELECTION_STAT_VALUE', f'{dives_count}/{dives_count}')
+            html = html.replace('KEEP_STAT_STYLE', 'style="display: none;"')
+            html = html.replace('KEEP_STAT_LABEL', 'To Keep')
+            html = html.replace('CONTROL_BUTTONS_PLACEHOLDER',
+                '<button class="btn-accept" id="btn-extract-selected">Extract Selected Dives</button>')
+        else:
+            html = html.replace('SELECTION_MODE_VALUE', 'false')
+            html = html.replace('SELECTION_MODE_TEXT', 'Quick review and filter detected dives')
+            html = html.replace('SELECTION_STAT_LABEL', 'Selected for Delete')
+            html = html.replace('SELECTION_STAT_VALUE', '0')
+            html = html.replace('KEEP_STAT_STYLE', '')
+            html = html.replace('KEEP_STAT_LABEL', 'To Keep')
+            html = html.replace('CONTROL_BUTTONS_PLACEHOLDER',
+                '<button class="btn-watch" id="btn-watch">Watch Selected</button>\n                <button class="btn-delete" id="btn-delete">Delete Selected</button>\n                <button class="btn-accept" id="btn-accept">Accept All & Close</button>')
 
         # Normalize doubled braces (produced to escape Python f-strings) back to single.
         # Collapse repeated sequences iteratively so patterns like '{{{' -> '{'
