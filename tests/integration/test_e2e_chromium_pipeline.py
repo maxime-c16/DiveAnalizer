@@ -363,14 +363,20 @@ async def test_e2e_pipeline():
                     extraction_complete = False
                     for attempt in range(120):  # 2 minute timeout
                         try:
-                            # Look for extraction complete message or extracted videos
-                            has_videos = await page.evaluate(
-                                "() => Array.from(document.querySelectorAll('.dive-card')).some(card => "
-                                "card.querySelector('video') || card.innerHTML.includes('dive_'))"
+                            # Check if extraction is complete by looking for:
+                            # 1. extraction_complete event received (check browser console logs)
+                            # 2. Gallery reload requested (indicates extraction finished)
+                            # 3. Extracted mode buttons present (btn-delete, btn-watch, btn-accept)
+
+                            # Check if extracted mode buttons are now visible
+                            has_extracted_mode = await page.evaluate(
+                                "() => !!document.getElementById('btn-delete') && "
+                                "!!document.getElementById('btn-watch') && "
+                                "!!document.getElementById('btn-accept')"
                             )
 
-                            if has_videos:
-                                logger.info("✅ Extracted videos detected")
+                            if has_extracted_mode:
+                                logger.info("✅ Extracted mode buttons detected (extraction complete)")
                                 extraction_complete = True
                                 break
 
