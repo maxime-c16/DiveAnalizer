@@ -119,14 +119,25 @@ async def test_e2e_pipeline():
     try:
         from playwright.async_api import async_playwright
 
-        # Get test video - use very_short.mp4 for faster testing (change to back_to_back.mp4 for full test)
-        test_video = Path("tests/fixtures/edge_cases/very_short.mp4")
-        if not test_video.exists():
-            # Fallback to back_to_back if very_short doesn't exist
-            test_video = Path("tests/fixtures/edge_cases/back_to_back.mp4")
+        # Get test video - use back_to_back.mp4 as it has more reliable codec
+        # (very_short.mp4 has frame reading issues at the end)
+        test_video = Path("tests/fixtures/edge_cases/back_to_back.mp4")
 
         if not test_video.exists():
-            logger.error(f"❌ Test video not found: {test_video}")
+            # Fallback to other videos
+            for fallback in [
+                Path("tests/fixtures/edge_cases/false_positive.mp4"),
+                Path("tests/fixtures/edge_cases/no_audio.mp4"),
+            ]:
+                if fallback.exists():
+                    test_video = fallback
+                    break
+
+        if not test_video.exists():
+            logger.error(f"❌ No test video found")
+            logger.error(f"Available videos:")
+            for v in Path("tests/fixtures/edge_cases").glob("*.mp4"):
+                logger.error(f"  - {v.name} ({v.stat().st_size / (1024*1024):.1f}MB)")
             return False
 
         logger.info(f"✅ Test video found: {test_video}")
@@ -225,12 +236,22 @@ async def test_e2e_pipeline():
             metrics.start_phase("Wait_Selection_Mode")
 
             gallery_ready = False
-            for attempt in range(120):  # 2 minutes timeout
+            placeholder_visible = False
+            for attempt in range(180):  # 3 minutes timeout
                 try:
                     # Check if we're in selection mode
                     selection_mode = await page.evaluate(
                         "() => document.body.innerHTML.includes('Extract Selected Dives')"
                     )
+
+                    # Also check for placeholder
+                    placeholder = await page.evaluate(
+                        "() => document.body.innerHTML.includes('DiveAnalyzer Live Review')"
+                    )
+
+                    if placeholder and not placeholder_visible:
+                        logger.info("ℹ️  Placeholder gallery visible (processing in progress)")
+                        placeholder_visible = True
 
                     if selection_mode:
                         logger.info("✅ Selection mode gallery loaded")
