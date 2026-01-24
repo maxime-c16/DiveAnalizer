@@ -306,12 +306,15 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             event_queue: EventQueue for emitting SSE events
             server_instance: EventServer instance for gallery regeneration
         """
+        print(f"[EXTRACTION] 🚀 Starting background extraction job {job_id}", flush=True)
         logger.info(f"🚀 Starting background extraction job {job_id}")
 
         try:
             extract_dive_clip = get_extract_dive_clip()
+            print(f"[EXTRACTION] ✓ extract_dive_clip imported successfully", flush=True)
             logger.debug(f"✓ extract_dive_clip imported successfully")
         except Exception as e:
+            print(f"[EXTRACTION] ❌ Failed to import extract_dive_clip: {e}", flush=True)
             logger.exception(f"❌ Failed to import extract_dive_clip: {e}")
             event_queue.publish('extraction_complete', {
                 'job_id': job_id,
@@ -328,7 +331,11 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         failed_count = 0
         failed_dives = []
 
+        print(f"[EXTRACTION] Preparing to extract {total_count} dives", flush=True)
         logger.info(f"Preparing to extract {total_count} dives")
+        print(f"[EXTRACTION] Video: {video_path}", flush=True)
+        print(f"[EXTRACTION] Output: {output_dir}", flush=True)
+        print(f"[EXTRACTION] Audio enabled: {audio_enabled}", flush=True)
         logger.debug(f"Video: {video_path}, Output: {output_dir}, Audio: {audio_enabled}")
 
         # Emit extraction start event
@@ -354,6 +361,7 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                 logger.debug(f"Submitting extraction task for dive {dive_number}: {dive.start_time}s - {dive.end_time}s")
 
                 try:
+                    print(f"[EXTRACTION] Submitting dive {dive_number}: {dive.start_time}s - {dive.end_time}s", flush=True)
                     future = executor.submit(
                         extract_dive_clip,
                         video_path,
@@ -367,9 +375,11 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                         'output_path': output_path,
                         'output_filename': output_filename,
                     }
+                    print(f"[EXTRACTION] ✓ Task submitted for dive {dive_number}", flush=True)
                     logger.debug(f"✓ Extraction task submitted for dive {dive_number}")
                 except Exception as e:
                     # Handle case where task submission fails
+                    print(f"[EXTRACTION] ❌ Failed to submit dive {dive_number}: {type(e).__name__}: {e}", flush=True)
                     logger.error(f"Failed to submit extraction task for dive {dive_number}: {type(e).__name__}: {e}")
                     failed_count += 1
                     failed_dives.append({'dive_id': dive_number, 'error': f'submission failed: {e}'})
