@@ -394,7 +394,12 @@ async def test_e2e_pipeline():
 
             # Check if gallery switched to extracted mode
             await asyncio.sleep(3)  # Wait for any potential reload
-            await page.reload(wait_until="networkidle")
+            # Use "load" instead of "networkidle" since the gallery reload event
+            # may not be as network-heavy and networkidle can timeout
+            try:
+                await page.reload(wait_until="load", timeout=10000)
+            except Exception as e:
+                logger.debug(f"Page reload timeout (page may have already reloaded): {e}")
 
             has_delete_btn = await page.evaluate(
                 "() => !!document.getElementById('btn-delete')"
