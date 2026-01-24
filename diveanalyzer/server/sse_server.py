@@ -924,7 +924,7 @@ class EventServer:
 
             # Create gallery generator and scan for extracted files
             generator = DiveGalleryGenerator(Path(self.output_dir))
-            extracted_dives = generator.scan_output_dir()  # Finds .mp4 files
+            extracted_dives = generator.scan_dives()  # Finds .mp4 files in output dir
 
             if extracted_dives:
                 # Regenerate gallery in extracted mode (selection_mode=False)
