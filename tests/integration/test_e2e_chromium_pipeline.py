@@ -161,7 +161,7 @@ async def test_e2e_pipeline():
                 "--no-open",  # Don't open Safari automatically
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr into stdout for easier debugging
             text=True,
             cwd="/Users/mcauchy/workflow/DiveAnalizer"
         )
@@ -169,13 +169,26 @@ async def test_e2e_pipeline():
         logger.info(f"✅ CLI process started (PID: {cli_process.pid})")
         metrics.log_event('cli_started', {'pid': cli_process.pid})
 
-        # Log CLI output in background
+        # Log CLI output in background (both stdout and stderr merged)
+        cli_output_file = Path("/tmp/e2e_cli_output.log")
         def log_cli_output():
             try:
-                for line in cli_process.stdout:
-                    logger.debug(f"[CLI] {line.rstrip()}")
-            except:
-                pass
+                with open(cli_output_file, 'w') as f:
+                    for line in cli_process.stdout:
+                        if line.strip():
+                            # Write to file
+                            f.write(line)
+                            f.flush()
+
+                            # Log warnings/errors with higher priority
+                            if any(x in line.lower() for x in ['error', 'failed', 'exception', 'traceback']):
+                                logger.error(f"[CLI] {line.rstrip()}")
+                            elif any(x in line.lower() for x in ['warning', 'warn']):
+                                logger.warning(f"[CLI] {line.rstrip()}")
+                            else:
+                                logger.debug(f"[CLI] {line.rstrip()}")
+            except Exception as e:
+                logger.exception(f"Error reading CLI output: {e}")
 
         import threading
         cli_logger_thread = threading.Thread(target=log_cli_output, daemon=True)
