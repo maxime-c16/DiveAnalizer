@@ -306,12 +306,30 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             event_queue: EventQueue for emitting SSE events
             server_instance: EventServer instance for gallery regeneration
         """
-        extract_dive_clip = get_extract_dive_clip()
+        logger.info(f"🚀 Starting background extraction job {job_id}")
+
+        try:
+            extract_dive_clip = get_extract_dive_clip()
+            logger.debug(f"✓ extract_dive_clip imported successfully")
+        except Exception as e:
+            logger.exception(f"❌ Failed to import extract_dive_clip: {e}")
+            event_queue.publish('extraction_complete', {
+                'job_id': job_id,
+                'extracted_count': 0,
+                'failed_count': len(selected_dives),
+                'total_count': len(selected_dives),
+                'failed_dives': [{'dive_id': d.dive_number, 'error': 'import failed'} for d in selected_dives],
+                'message': f'Failed to import extraction module: {e}',
+            })
+            return
 
         total_count = len(selected_dives)
         extracted_count = 0
         failed_count = 0
         failed_dives = []
+
+        logger.info(f"Preparing to extract {total_count} dives")
+        logger.debug(f"Video: {video_path}, Output: {output_dir}, Audio: {audio_enabled}")
 
         # Emit extraction start event
         event_queue.publish('extraction_started', {
@@ -331,6 +349,8 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                     output_filename = f"dive_{dive_number:03d}.mp4"
                     output_path = Path(output_dir) / output_filename
 
+                    logger.debug(f"Submitting extraction task for dive {dive_number}: {dive.start_time}s - {dive.end_time}s")
+
                     try:
                         future = executor.submit(
                             extract_dive_clip,
@@ -345,11 +365,12 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                             'output_path': output_path,
                             'output_filename': output_filename,
                         }
-                    except RuntimeError as e:
-                        # Handle case where executor is shutting down
-                        logger.error(f"Failed to submit extraction task: {e}")
+                        logger.debug(f"✓ Extraction task submitted for dive {dive_number}")
+                    except Exception as e:
+                        # Handle case where executor is shutting down or task submission fails
+                        logger.error(f"Failed to submit extraction task for dive {dive_number}: {type(e).__name__}: {e}")
                         failed_count += 1
-                        failed_dives.append(dive_number)
+                        failed_dives.append({'dive_id': dive_number, 'error': f'submission failed: {e}'})
                         continue
 
                 # Process results as they complete
@@ -361,8 +382,10 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                     dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
 
                     try:
-                        # Wait for extraction to complete
-                        future.result()
+                        # Wait for extraction to complete with timeout
+                        logger.debug(f"Waiting for extraction of dive {dive_number}...")
+                        future.result(timeout=120)  # 2 minute timeout per dive
+                        logger.debug(f"✓ Extraction completed for dive {dive_number}")
 
                         # Check if file was created and get size
                         if output_path.exists():
@@ -379,15 +402,16 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                                 'extracted_count': extracted_count,
                                 'total_count': total_count,
                             })
-                            logger.info(f"Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
+                            logger.info(f"✅ Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
                         else:
                             raise RuntimeError(f"Output file not created: {output_path}")
 
                     except Exception as e:
                         failed_count += 1
+                        error_msg = f"{type(e).__name__}: {str(e)}"
                         failed_dives.append({
                             'dive_id': dive_number,
-                            'error': str(e)
+                            'error': error_msg
                         })
 
                         # Emit dive extraction failure event
@@ -395,11 +419,11 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                             'job_id': job_id,
                             'dive_id': dive_number,
                             'success': False,
-                            'error': str(e),
+                            'error': error_msg,
                             'extracted_count': extracted_count,
                             'total_count': total_count,
                         })
-                        logger.error(f"Failed to extract dive {dive_number}: {e}")
+                        logger.error(f"❌ Failed to extract dive {dive_number}: {error_msg}")
 
         except Exception as e:
             logger.exception(f"Extraction process failed: {e}")
