@@ -1881,6 +1881,7 @@ class DiveGalleryGenerator:
                         'person_detection_complete',
                         'dives_detected',
                         'extraction_complete',
+                        'gallery_reload_requested',
                         'processing_complete',
                         'status_update',
                         'dive_detected',
@@ -1999,6 +2000,18 @@ class DiveGalleryGenerator:
                     // FEAT-07: Handle thumbnail_generation_complete for final status
                     if (eventType === 'thumbnail_generation_complete') {{
                         console.log(`Thumbnail generation complete: ${{data.completed_count}}/${{data.total_dives}} thumbnails`);
+                    }}
+
+                    // Handle gallery reload request (after extraction completes)
+                    if (eventType === 'gallery_reload_requested' && data.message) {{
+                        console.log('SSE: Gallery reload requested:', data.message);
+                        showMessage(data.message, 'success');
+
+                        // Reload gallery after extraction to show extracted files
+                        setTimeout(() => {{
+                            console.log('Reloading gallery to show extracted videos...');
+                            window.location.reload();
+                        }}, 1000);
                     }}
 
                 }} catch (error) {{

@@ -273,6 +273,7 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
                         audio_enabled,
                         job_id,
                         self.event_queue,
+                        self._server_instance,  # Pass server instance for gallery regeneration
                     ),
                     daemon=True
                 )
@@ -292,6 +293,7 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         audio_enabled: bool,
         job_id: str,
         event_queue,
+        server_instance=None,
     ):
         """Background thread worker for parallel dive extraction.
 
@@ -302,6 +304,7 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             audio_enabled: Whether to include audio
             job_id: Unique job ID for tracking
             event_queue: EventQueue for emitting SSE events
+            server_instance: EventServer instance for gallery regeneration
         """
         extract_dive_clip = get_extract_dive_clip()
 
@@ -318,77 +321,88 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         })
 
         # Use ThreadPoolExecutor with 4 worker threads
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {}
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {}
 
-            # Submit all extraction tasks
-            for dive in selected_dives:
-                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
-                output_filename = f"dive_{dive_number:03d}.mp4"
-                output_path = Path(output_dir) / output_filename
+                # Submit all extraction tasks
+                for dive in selected_dives:
+                    dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+                    output_filename = f"dive_{dive_number:03d}.mp4"
+                    output_path = Path(output_dir) / output_filename
 
-                future = executor.submit(
-                    extract_dive_clip,
-                    video_path,
-                    dive.start_time,
-                    dive.end_time,
-                    str(output_path),
-                    audio_enabled=audio_enabled,
-                )
-                futures[future] = {
-                    'dive': dive,
-                    'output_path': output_path,
-                    'output_filename': output_filename,
-                }
+                    try:
+                        future = executor.submit(
+                            extract_dive_clip,
+                            video_path,
+                            dive.start_time,
+                            dive.end_time,
+                            str(output_path),
+                            audio_enabled=audio_enabled,
+                        )
+                        futures[future] = {
+                            'dive': dive,
+                            'output_path': output_path,
+                            'output_filename': output_filename,
+                        }
+                    except RuntimeError as e:
+                        # Handle case where executor is shutting down
+                        logger.error(f"Failed to submit extraction task: {e}")
+                        failed_count += 1
+                        failed_dives.append(dive_number)
+                        continue
 
-            # Process results as they complete
-            for future in futures:
-                dive_info = futures[future]
-                dive = dive_info['dive']
-                output_path = dive_info['output_path']
-                output_filename = dive_info['output_filename']
-                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+                # Process results as they complete
+                for future in futures:
+                    dive_info = futures[future]
+                    dive = dive_info['dive']
+                    output_path = dive_info['output_path']
+                    output_filename = dive_info['output_filename']
+                    dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
 
-                try:
-                    # Wait for extraction to complete
-                    future.result()
+                    try:
+                        # Wait for extraction to complete
+                        future.result()
 
-                    # Check if file was created and get size
-                    if output_path.exists():
-                        size_mb = output_path.stat().st_size / (1024 * 1024)
-                        extracted_count += 1
+                        # Check if file was created and get size
+                        if output_path.exists():
+                            size_mb = output_path.stat().st_size / (1024 * 1024)
+                            extracted_count += 1
 
-                        # Emit dive extracted event
+                            # Emit dive extracted event
+                            event_queue.publish('dive_extracted', {
+                                'job_id': job_id,
+                                'dive_id': dive_number,
+                                'success': True,
+                                'filename': output_filename,
+                                'size_mb': f"{size_mb:.2f}",
+                                'extracted_count': extracted_count,
+                                'total_count': total_count,
+                            })
+                            logger.info(f"Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
+                        else:
+                            raise RuntimeError(f"Output file not created: {output_path}")
+
+                    except Exception as e:
+                        failed_count += 1
+                        failed_dives.append({
+                            'dive_id': dive_number,
+                            'error': str(e)
+                        })
+
+                        # Emit dive extraction failure event
                         event_queue.publish('dive_extracted', {
                             'job_id': job_id,
                             'dive_id': dive_number,
-                            'success': True,
-                            'filename': output_filename,
-                            'size_mb': f"{size_mb:.2f}",
+                            'success': False,
+                            'error': str(e),
                             'extracted_count': extracted_count,
                             'total_count': total_count,
                         })
-                        logger.info(f"Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
-                    else:
-                        raise RuntimeError(f"Output file not created: {output_path}")
+                        logger.error(f"Failed to extract dive {dive_number}: {e}")
 
-                except Exception as e:
-                    failed_count += 1
-                    failed_dives.append({
-                        'dive_id': dive_number,
-                        'error': str(e)
-                    })
-
-                    # Emit dive extraction failure event
-                    event_queue.publish('dive_extracted', {
-                        'job_id': job_id,
-                        'dive_id': dive_number,
-                        'success': False,
-                        'error': str(e),
-                        'extracted_count': extracted_count,
-                        'total_count': total_count,
-                    })
-                    logger.error(f"Failed to extract dive {dive_number}: {e}")
+        except Exception as e:
+            logger.exception(f"Extraction process failed: {e}")
 
         # Emit extraction complete event
         event_queue.publish('extraction_complete', {
@@ -405,6 +419,14 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
             f"Extraction job {job_id} complete: "
             f"{extracted_count}/{total_count} extracted, {failed_count} failed"
         )
+
+        # Regenerate gallery in extracted mode to show video files for review/deletion
+        if extracted_count > 0 and server_instance:
+            try:
+                server_instance.regenerate_gallery_for_extraction_complete()
+                logger.info("Gallery regenerated for extracted videos")
+            except Exception as e:
+                logger.exception(f"Failed to regenerate gallery: {e}")
 
     def _handle_delete_files(self):
         """Handle deletion of selected dive files.
@@ -707,6 +729,13 @@ class EventServer:
         # Shared state for request handlers
         self.event_queue = EventQueue()
 
+        # Attributes for gallery mode switching
+        self.video_path = None
+        self.output_dir = None
+        self.dives_metadata = None
+        self.thumbnail_map = None
+        self.audio_enabled = True
+
         # Configure logging
         logging.basicConfig(
             level=getattr(logging, log_level, logging.INFO),
@@ -874,3 +903,44 @@ class EventServer:
             True if server is currently running
         """
         return self.running
+
+    def regenerate_gallery_for_extraction_complete(self):
+        """Regenerate gallery in extracted mode after dives are extracted.
+
+        This switches the gallery from selection mode (thumbnails) to extracted mode
+        (video files for review/deletion). Called after extraction completes.
+        """
+        try:
+            if not self.output_dir:
+                logger.warning("Cannot regenerate gallery: output_dir not set")
+                return
+
+            from diveanalyzer.utils.review_gallery import DiveGalleryGenerator
+            from pathlib import Path
+
+            # Create gallery generator and scan for extracted files
+            generator = DiveGalleryGenerator(Path(self.output_dir))
+            extracted_dives = generator.scan_output_dir()  # Finds .mp4 files
+
+            if extracted_dives:
+                # Regenerate gallery in extracted mode (selection_mode=False)
+                generator.selection_mode = False
+                new_gallery_path = generator.generate_html()
+                self.gallery_path = new_gallery_path
+
+                # Update handler to serve new gallery
+                DiveReviewSSEHandler.gallery_path = new_gallery_path
+
+                logger.info(f"Gallery regenerated for extraction: {new_gallery_path}")
+
+                # Emit event to trigger browser reload
+                self.emit("gallery_reload_requested", {
+                    "message": "Dives extracted! Refreshing gallery for review and deletion...",
+                    "extracted_count": len(extracted_dives),
+                    "new_gallery_url": self.get_url(),
+                })
+            else:
+                logger.warning("No extracted files found to display")
+
+        except Exception as e:
+            logger.exception(f"Error regenerating gallery after extraction: {e}")
