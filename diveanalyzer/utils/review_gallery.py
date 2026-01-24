@@ -2789,45 +2789,48 @@ class DiveGalleryGenerator:
                 return;
             }}
 
-            // Collect selected dive IDs and timing info
-            const selectedDives = [];
+            // Collect selected dive IDs only
+            const selectedDiveIds = [];
             selected.forEach(checkbox => {{
                 const card = checkbox.closest('.dive-card');
                 const diveId = parseInt(card.dataset.id);
-                selectedDives.push({{
-                    dive_id: diveId,
-                    start_time: parseFloat(card.dataset.start),
-                    end_time: parseFloat(card.dataset.end),
-                    splash_time: parseFloat(card.dataset.splash),
-                    confidence: parseFloat(card.dataset.confidence)
-                }});
+                selectedDiveIds.push(diveId);
             }});
 
-            console.log('Extract selected dives:', selectedDives);
+            console.log('Extract selected dives:', selectedDiveIds);
 
             // Send POST request to server
             if (window.SERVER_URL) {{
-                showMessage(`🎬 Extracting ${{selectedDives.length}} dive(s)...`, 'info');
+                showMessage(`🎬 Extracting ${{selectedDiveIds.length}} dive(s)...`, 'info');
                 fetch(`${{window.SERVER_URL}}/extract_selected`, {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ dives: selectedDives }})
+                    body: JSON.stringify({{ selected_dive_ids: selectedDiveIds }})
                 }})
-                .then(res => res.json())
+                .then(res => {{
+                    console.log('Extract response status:', res.status);
+                    if (!res.ok) {{
+                        return res.json().then(err => {{
+                            throw new Error(err.message || `Server error: ${{res.status}}`);
+                        }});
+                    }}
+                    return res.json();
+                }})
                 .then(data => {{
-                    if (data.status === 'success') {{
-                        showMessage(`✅ Successfully extracted ${{selectedDives.length}} dive(s)!`, 'success');
-                        // Optionally redirect or update UI
+                    console.log('Extract response data:', data);
+                    if (data.status === 'started') {{
+                        showMessage(`✅ Extraction started for ${{selectedDiveIds.length}} dive(s). Processing in background...`, 'success');
+                        // Wait a moment for extraction to complete, then optionally reload
                         setTimeout(() => {{
                             window.location.reload();
-                        }}, 2000);
+                        }}, 3000);
                     }} else {{
                         showMessage(`❌ Extraction failed: ${{data.message || 'Unknown error'}}`, 'error');
                     }}
                 }})
                 .catch(err => {{
                     console.error('Extract request failed:', err);
-                    showMessage('❌ Extract request failed (server error)', 'error');
+                    showMessage(`❌ Extract request failed: ${{err.message}}`, 'error');
                 }});
             }} else {{
                 showMessage('❌ Server not available. Cannot extract dives.', 'error');
