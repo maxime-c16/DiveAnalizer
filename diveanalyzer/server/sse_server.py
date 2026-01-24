@@ -339,94 +339,104 @@ class DiveReviewSSEHandler(BaseHTTPRequestHandler):
         })
 
         # Use ThreadPoolExecutor with 4 worker threads
+        # NOTE: Do NOT use context manager ('with') as it causes executor shutdown issues
+        # in background threads. Manage executor lifecycle explicitly.
+        executor = ThreadPoolExecutor(max_workers=4)
+        futures = {}
+
         try:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {}
+            # Submit all extraction tasks
+            for dive in selected_dives:
+                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+                output_filename = f"dive_{dive_number:03d}.mp4"
+                output_path = Path(output_dir) / output_filename
 
-                # Submit all extraction tasks
-                for dive in selected_dives:
-                    dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
-                    output_filename = f"dive_{dive_number:03d}.mp4"
-                    output_path = Path(output_dir) / output_filename
+                logger.debug(f"Submitting extraction task for dive {dive_number}: {dive.start_time}s - {dive.end_time}s")
 
-                    logger.debug(f"Submitting extraction task for dive {dive_number}: {dive.start_time}s - {dive.end_time}s")
+                try:
+                    future = executor.submit(
+                        extract_dive_clip,
+                        video_path,
+                        dive.start_time,
+                        dive.end_time,
+                        str(output_path),
+                        audio_enabled=audio_enabled,
+                    )
+                    futures[future] = {
+                        'dive': dive,
+                        'output_path': output_path,
+                        'output_filename': output_filename,
+                    }
+                    logger.debug(f"✓ Extraction task submitted for dive {dive_number}")
+                except Exception as e:
+                    # Handle case where task submission fails
+                    logger.error(f"Failed to submit extraction task for dive {dive_number}: {type(e).__name__}: {e}")
+                    failed_count += 1
+                    failed_dives.append({'dive_id': dive_number, 'error': f'submission failed: {e}'})
+                    continue
 
-                    try:
-                        future = executor.submit(
-                            extract_dive_clip,
-                            video_path,
-                            dive.start_time,
-                            dive.end_time,
-                            str(output_path),
-                            audio_enabled=audio_enabled,
-                        )
-                        futures[future] = {
-                            'dive': dive,
-                            'output_path': output_path,
-                            'output_filename': output_filename,
-                        }
-                        logger.debug(f"✓ Extraction task submitted for dive {dive_number}")
-                    except Exception as e:
-                        # Handle case where executor is shutting down or task submission fails
-                        logger.error(f"Failed to submit extraction task for dive {dive_number}: {type(e).__name__}: {e}")
-                        failed_count += 1
-                        failed_dives.append({'dive_id': dive_number, 'error': f'submission failed: {e}'})
-                        continue
+            # Process results as they complete
+            for future in futures:
+                dive_info = futures[future]
+                dive = dive_info['dive']
+                output_path = dive_info['output_path']
+                output_filename = dive_info['output_filename']
+                dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
 
-                # Process results as they complete
-                for future in futures:
-                    dive_info = futures[future]
-                    dive = dive_info['dive']
-                    output_path = dive_info['output_path']
-                    output_filename = dive_info['output_filename']
-                    dive_number = dive.dive_number if hasattr(dive, 'dive_number') else '?'
+                try:
+                    # Wait for extraction to complete with timeout
+                    logger.debug(f"Waiting for extraction of dive {dive_number}...")
+                    future.result(timeout=120)  # 2 minute timeout per dive
+                    logger.debug(f"✓ Extraction completed for dive {dive_number}")
 
-                    try:
-                        # Wait for extraction to complete with timeout
-                        logger.debug(f"Waiting for extraction of dive {dive_number}...")
-                        future.result(timeout=120)  # 2 minute timeout per dive
-                        logger.debug(f"✓ Extraction completed for dive {dive_number}")
+                    # Check if file was created and get size
+                    if output_path.exists():
+                        size_mb = output_path.stat().st_size / (1024 * 1024)
+                        extracted_count += 1
 
-                        # Check if file was created and get size
-                        if output_path.exists():
-                            size_mb = output_path.stat().st_size / (1024 * 1024)
-                            extracted_count += 1
-
-                            # Emit dive extracted event
-                            event_queue.publish('dive_extracted', {
-                                'job_id': job_id,
-                                'dive_id': dive_number,
-                                'success': True,
-                                'filename': output_filename,
-                                'size_mb': f"{size_mb:.2f}",
-                                'extracted_count': extracted_count,
-                                'total_count': total_count,
-                            })
-                            logger.info(f"✅ Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
-                        else:
-                            raise RuntimeError(f"Output file not created: {output_path}")
-
-                    except Exception as e:
-                        failed_count += 1
-                        error_msg = f"{type(e).__name__}: {str(e)}"
-                        failed_dives.append({
-                            'dive_id': dive_number,
-                            'error': error_msg
-                        })
-
-                        # Emit dive extraction failure event
+                        # Emit dive extracted event
                         event_queue.publish('dive_extracted', {
                             'job_id': job_id,
                             'dive_id': dive_number,
-                            'success': False,
-                            'error': error_msg,
+                            'success': True,
+                            'filename': output_filename,
+                            'size_mb': f"{size_mb:.2f}",
                             'extracted_count': extracted_count,
                             'total_count': total_count,
                         })
-                        logger.error(f"❌ Failed to extract dive {dive_number}: {error_msg}")
+                        logger.info(f"✅ Extracted dive {dive_number}: {output_filename} ({size_mb:.2f}MB)")
+                    else:
+                        raise RuntimeError(f"Output file not created: {output_path}")
+
+                except Exception as e:
+                    failed_count += 1
+                    error_msg = f"{type(e).__name__}: {str(e)}"
+                    failed_dives.append({
+                        'dive_id': dive_number,
+                        'error': error_msg
+                    })
+
+                    # Emit dive extraction failure event
+                    event_queue.publish('dive_extracted', {
+                        'job_id': job_id,
+                        'dive_id': dive_number,
+                        'success': False,
+                        'error': error_msg,
+                        'extracted_count': extracted_count,
+                        'total_count': total_count,
+                    })
+                    logger.error(f"❌ Failed to extract dive {dive_number}: {error_msg}")
 
         except Exception as e:
             logger.exception(f"Extraction process failed: {e}")
+
+        finally:
+            # Properly shutdown the executor
+            try:
+                executor.shutdown(wait=True, timeout=300)
+                logger.debug(f"✓ Executor shutdown complete")
+            except Exception as e:
+                logger.warning(f"Error shutting down executor: {e}")
 
         # Emit extraction complete event
         event_queue.publish('extraction_complete', {
